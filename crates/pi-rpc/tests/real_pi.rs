@@ -9,8 +9,7 @@
 //! for a one word answer, and runs everything through [`pi_rpc::run_pump`],
 //! which is the same batching path the desktop app uses.
 
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pi_rpc::{run_pump, ClientEvent, PiClient, PiEvent, SpawnOptions};
 
@@ -19,75 +18,46 @@ use pi_rpc::{run_pump, ClientEvent, PiClient, PiEvent, SpawnOptions};
 fn prompt_streams_and_settles() {
     let mut options = SpawnOptions::new(std::env::current_dir().unwrap());
     options.no_session = true;
-
     let client = PiClient::spawn(options).expect("spawn pi");
     let events = client.subscribe();
-
     let state = client.get_state().expect("get_state");
-    assert!(
-        state.get("sessionId").and_then(|value| value.as_str()).is_some(),
-        "get_state did not return a session id: {state}"
-    );
-
+    assert!(state["sessionId"].is_string());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut saw_text = false;
+        let mut batches = 0;
+        run_pump(&events, |batch| {
+            batches += 1;
+            for record in batch {
+                if record["kind"] == "exited" {
+                    let _ = sender.send(Err("pi exited".to_string()));
+                }
+                let event = &record["event"];
+                if event["type"] == "message_update"
+                    && event["assistantMessageEvent"]["type"] == "text_delta"
+                {
+                    saw_text = true;
+                }
+                if event["type"] == "agent_settled" {
+                    let result = if event["aborted"] == true {
+                        Err("agent aborted".to_string())
+                    } else {
+                        Ok((saw_text, batches))
+                    };
+                    let _ = sender.send(result);
+                }
+            }
+        });
+    });
     client
         .prompt("Reply with exactly: OK")
-        .expect("pi rejected the prompt");
-
-    let deadline = Instant::now() + Duration::from_secs(180);
-    let mut saw_text = false;
-    let mut batches = 0usize;
-    // Set by the closure below once `agent_settled` is seen.
-    let outcome = std::cell::Cell::new(false);
-
-    // Drain through the real pump so the batching path is covered too.
-    let mut check = |batch: &[serde_json::Value]| {
-        batches += 1;
-        for record in batch {
-            if record.get("kind").and_then(|kind| kind.as_str()) != Some("pi") {
-                continue;
-            }
-            let Some(event) = record.get("event") else { continue };
-            let kind = event.get("type").and_then(|value| value.as_str());
-            if kind == Some("agent_settled") {
-                outcome.set(true);
-            } else if kind == Some("message_update")
-                && event
-                    .pointer("/assistantMessageEvent/type")
-                    .and_then(|value| value.as_str())
-                    == Some("text_delta")
-            {
-                saw_text = true;
-            }
-        }
-    };
-
-    loop {
-        if Instant::now() >= deadline {
-            break;
-        }
-        let remaining = (deadline - Instant::now()).min(Duration::from_millis(200));
-        match events.recv_timeout(remaining) {
-            Ok(ClientEvent::Pi(PiEvent::AgentSettled { aborted })) => {
-                assert!(!aborted, "run was aborted");
-                check(&[pi_rpc::event_payload(&ClientEvent::Pi(
-                    PiEvent::AgentSettled { aborted: false },
-                ))]);
-                break;
-            }
-            Ok(ClientEvent::Pi(event)) => {
-                check(&[pi_rpc::event_payload(&ClientEvent::Pi(event))]);
-            }
-            Ok(ClientEvent::Exited(code)) => panic!("pi exited before settling: {code:?}"),
-            Ok(ClientEvent::ProtocolError(message)) => eprintln!("protocol error: {message}"),
-            Ok(_) => {}
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    let _ = client.close();
-    assert!(outcome.get(), "pi never reached agent_settled");
+        .expect("pi rejected prompt");
+    let result = receiver.recv_timeout(Duration::from_secs(180));
+    client.close().expect("close pi");
+    worker.join().unwrap();
+    let (saw_text, batches) = result.expect("pi never settled").expect("pi failed");
     assert!(saw_text, "no text delta arrived");
-    assert!(batches > 0, "the pump produced no batches");
+    assert!(batches > 0, "the actual pump must receive real events");
 }
 
 /// The pump batches everything that arrives within one window.

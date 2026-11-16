@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "pi-probe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pi-rpc",
  "serde_json",
@@ -2576,16 +2576,18 @@ dependencies = [
 
 [[package]]
 name = "pi-rpc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
+ "base64 0.23.1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "pi-workbench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pi-rpc",
  "serde",
@@ -2594,6 +2596,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tempfile",
+ "time",
 ]
 
 [[package]]

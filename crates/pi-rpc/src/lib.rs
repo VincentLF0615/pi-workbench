@@ -31,6 +31,7 @@ pub mod discover;
 pub mod error;
 pub mod events;
 pub mod framer;
+pub mod images;
 pub mod pump;
 pub mod ui;
 pub mod wire;
@@ -41,3 +42,5 @@ pub use events::PiEvent;
 pub use framer::{Framer, DEFAULT_MAX_LINE};
 pub use pump::{batch_payload, event_payload, run_pump, BATCH_MAX, BATCH_WINDOW};
 pub use ui::{UiReply, UiRequest};
+
+pub use images::{validate_images, ImageContent};

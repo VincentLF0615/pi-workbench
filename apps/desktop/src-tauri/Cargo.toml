@@ -1,6 +1,6 @@
 [package]
 name = "pi-workbench"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop workbench for the pi coding agent"
 authors = ["LuoFeng"]
 edition = "2024"
@@ -24,10 +24,8 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pi-rpc = { path = "../../../crates/pi-rpc" }
+time = { version = "0.3.55", features = ["formatting"] }
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true
+
+[dev-dependencies]
+tempfile = "3.27"

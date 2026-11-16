@@ -66,6 +66,28 @@ impl UiRequest {
     }
 }
 
+/// Desktop IPC contract; each reply carries exactly the matching value type.
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum UiReplyRequest {
+    Value { request_id: String, value: String },
+    Confirmed { request_id: String, value: bool },
+    Cancelled { request_id: String },
+}
+impl UiReplyRequest {
+    pub fn into_reply(self) -> (String, UiReply) {
+        match self {
+            Self::Value { request_id, value } => (request_id, UiReply::Value(value)),
+            Self::Confirmed { request_id, value } => (request_id, UiReply::Confirmed(value)),
+            Self::Cancelled { request_id } => (request_id, UiReply::Cancelled),
+        }
+    }
+}
+
 /// Answer for a dialog request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiReply {
@@ -102,6 +124,22 @@ impl UiReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_reply_fixtures_decode_to_the_official_wire_contract() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../../../fixtures/contracts/ui-replies.json"))
+                .unwrap();
+        for case in cases {
+            let reply: UiReplyRequest = serde_json::from_value(case["request"].clone()).unwrap();
+            let (id, reply) = reply.into_reply();
+            assert_eq!(reply.to_record(&id), case["wire"]);
+        }
+        assert!(serde_json::from_value::<UiReplyRequest>(
+            json!({"kind":"confirmed","requestId":"x","value":"true"})
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_dialog_request_and_keeps_unknown_fields() {

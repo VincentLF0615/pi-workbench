@@ -15,7 +15,7 @@
 //! drive from a GUI event loop (one pump thread, channels in, channels out).
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -92,18 +92,31 @@ impl SpawnOptions {
 #[derive(Default)]
 struct Bus {
     subscribers: Mutex<Vec<Sender<ClientEvent>>>,
+    startup: Mutex<VecDeque<ClientEvent>>,
 }
 
 impl Bus {
     fn subscribe(&self) -> Receiver<ClientEvent> {
         let (sender, receiver) = mpsc::channel();
-        self.subscribers.lock().unwrap().push(sender);
+        let mut subscribers = self.subscribers.lock().unwrap();
+        for event in self.startup.lock().unwrap().drain(..) {
+            let _ = sender.send(event);
+        }
+        subscribers.push(sender);
         receiver
     }
 
     fn publish(&self, event: ClientEvent) {
         let mut subscribers = self.subscribers.lock().unwrap();
-        subscribers.retain(|sender| sender.send(event.clone()).is_ok());
+        if subscribers.is_empty() {
+            let mut startup = self.startup.lock().unwrap();
+            if startup.len() == 256 {
+                startup.pop_front();
+            }
+            startup.push_back(event);
+        } else {
+            subscribers.retain(|sender| sender.send(event.clone()).is_ok());
+        }
     }
 }
 
@@ -113,6 +126,8 @@ struct Inner {
     sequence: AtomicU64,
     closed: Arc<AtomicBool>,
     stderr_tail: Mutex<VecDeque<String>>,
+    process_exit: Mutex<Option<Option<i32>>>,
+    reader_done: AtomicBool,
 }
 
 /// A running pi RPC session.
@@ -194,10 +209,17 @@ impl PiClient {
             sequence: AtomicU64::new(0),
             closed: Arc::clone(&closed),
             stderr_tail: Mutex::new(VecDeque::new()),
+            process_exit: Mutex::new(None),
+            reader_done: AtomicBool::new(false),
         });
 
         let (command_sender, command_receiver) = mpsc::channel::<Value>();
-        spawn_writer(stdin, command_receiver, Arc::clone(&shutdown));
+        spawn_writer(
+            stdin,
+            command_receiver,
+            Arc::clone(&shutdown),
+            Arc::clone(&inner),
+        );
         spawn_reader(stdout, Arc::clone(&inner));
         spawn_stderr(stderr, Arc::clone(&inner));
         spawn_waiter(child, Arc::clone(&inner));
@@ -222,6 +244,10 @@ impl PiClient {
 
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::SeqCst)
+    }
+
+    pub fn has_exited(&self) -> bool {
+        self.inner.process_exit.lock().unwrap().is_some()
     }
 
     /// Subscribe to session events, UI requests and exit notifications.
@@ -279,11 +305,16 @@ impl PiClient {
         };
 
         let (sender, receiver) = mpsc::channel();
-        self.inner
-            .pending
-            .lock()
-            .unwrap()
-            .insert(id.clone(), sender);
+        {
+            let mut pending = self.inner.pending.lock().unwrap();
+            if self.is_closed() {
+                return Err(self.connection_error());
+            }
+            if pending.contains_key(&id) {
+                return Err(Error::Protocol(format!("duplicate request id {id}")));
+            }
+            pending.insert(id.clone(), sender);
+        }
 
         if self.commands.lock().unwrap().send(command).is_err() {
             self.inner.pending.lock().unwrap().remove(&id);
@@ -309,22 +340,60 @@ impl PiClient {
             }
             Err(RecvTimeoutError::Disconnected) => {
                 self.inner.pending.lock().unwrap().remove(&id);
-                Err(Error::Closed)
+                Err(self.connection_error())
             }
         }
     }
 
+    fn connection_error(&self) -> Error {
+        match *self.inner.process_exit.lock().unwrap() {
+            Some(code) => Error::Exited(code),
+            None => Error::Closed,
+        }
+    }
+
+    fn message_request(
+        &self,
+        kind: &str,
+        message: String,
+        images: &[crate::ImageContent],
+    ) -> Result<Value> {
+        crate::validate_images(images)?;
+        if message.trim().is_empty() && images.is_empty() {
+            return Err(Error::Protocol("消息不能为空".into()));
+        }
+        self.request(json!({"type": kind, "message": message, "images": images}))
+    }
+
     pub fn prompt(&self, message: impl Into<String>) -> Result<Value> {
-        self.request(json!({"type": "prompt", "message": message.into()}))
+        self.prompt_with_images(message, &[])
     }
-
-    /// Queue a steering message while the agent is running.
+    pub fn prompt_with_images(
+        &self,
+        message: impl Into<String>,
+        images: &[crate::ImageContent],
+    ) -> Result<Value> {
+        self.message_request("prompt", message.into(), images)
+    }
     pub fn steer(&self, message: impl Into<String>) -> Result<Value> {
-        self.request(json!({"type": "steer", "message": message.into()}))
+        self.steer_with_images(message, &[])
     }
-
+    pub fn steer_with_images(
+        &self,
+        message: impl Into<String>,
+        images: &[crate::ImageContent],
+    ) -> Result<Value> {
+        self.message_request("steer", message.into(), images)
+    }
     pub fn follow_up(&self, message: impl Into<String>) -> Result<Value> {
-        self.request(json!({"type": "follow_up", "message": message.into()}))
+        self.follow_up_with_images(message, &[])
+    }
+    pub fn follow_up_with_images(
+        &self,
+        message: impl Into<String>,
+        images: &[crate::ImageContent],
+    ) -> Result<Value> {
+        self.message_request("follow_up", message.into(), images)
     }
 
     pub fn abort(&self) -> Result<Value> {
@@ -416,72 +485,94 @@ impl PiClient {
     /// tree if pi is still alive.
     pub fn close(&self) -> Result<()> {
         self.shutdown.store(true, Ordering::SeqCst);
+        disconnect(&self.inner);
         let deadline = Instant::now() + SHUTDOWN_GRACE;
         while Instant::now() < deadline {
-            if self.is_closed() {
+            if self.inner.process_exit.lock().unwrap().is_some() {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(25));
         }
         kill_tree(self.pid);
-        Ok(())
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.inner.process_exit.lock().unwrap().is_some() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Err(Error::Protocol(
+            "pi process did not exit after termination".into(),
+        ))
     }
 }
 
 impl Drop for PiClient {
     fn drop(&mut self) {
-        if !self.is_closed() {
-            self.shutdown.store(true, Ordering::SeqCst);
+        self.shutdown.store(true, Ordering::SeqCst);
+        disconnect(&self.inner);
+        if self.inner.process_exit.lock().unwrap().is_none() {
             kill_tree(self.pid);
         }
     }
+}
+
+fn disconnect(inner: &Inner) {
+    inner.closed.store(true, Ordering::SeqCst);
+    inner.pending.lock().unwrap().clear();
 }
 
 fn spawn_writer(
     mut stdin: std::process::ChildStdin,
     commands: Receiver<Value>,
     shutdown: Arc<AtomicBool>,
+    inner: Arc<Inner>,
 ) {
-    thread::spawn(move || loop {
-        if shutdown.load(Ordering::SeqCst) {
-            break;
-        }
-        match commands.recv_timeout(Duration::from_millis(100)) {
-            Ok(value) => {
-                let mut line = match serde_json::to_vec(&value) {
-                    Ok(line) => line,
-                    Err(_) => continue,
-                };
-                line.push(b'\n');
-                if stdin.write_all(&line).is_err() || stdin.flush().is_err() {
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    });
-    // Dropping stdin here sends EOF, which is pi's orderly shutdown request.
-}
-
-fn spawn_reader(stdout: std::process::ChildStdout, inner: Arc<Inner>) {
     thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut framer = Framer::default();
-        let mut chunk = Vec::new();
-        loop {
-            chunk.clear();
-            match reader.read_until(b'\n', &mut chunk) {
-                Ok(0) => break,
-                Ok(_) => {
-                    for line in framer.push(&chunk) {
-                        dispatch(&inner, line);
+        while !shutdown.load(Ordering::SeqCst) {
+            match commands.recv_timeout(Duration::from_millis(100)) {
+                Ok(value) => {
+                    let mut line = match serde_json::to_vec(&value) {
+                        Ok(line) => line,
+                        Err(_) => continue,
+                    };
+                    line.push(b'\n');
+                    if stdin.write_all(&line).is_err() || stdin.flush().is_err() {
+                        break;
                     }
                 }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        disconnect(&inner);
+    });
+}
+
+fn spawn_reader(mut stdout: std::process::ChildStdout, inner: Arc<Inner>) {
+    thread::spawn(move || {
+        let mut framer = Framer::default();
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let previous = framer.oversized();
+                    for line in framer.push(&chunk[..count]) {
+                        dispatch(&inner, line);
+                    }
+                    if framer.oversized() != previous {
+                        inner.bus.publish(ClientEvent::ProtocolError(
+                            "oversized JSONL record discarded".into(),
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
-        inner.closed.store(true, Ordering::SeqCst);
+        inner.reader_done.store(true, Ordering::SeqCst);
+        disconnect(&inner);
     });
 }
 
@@ -527,23 +618,37 @@ fn dispatch(inner: &Arc<Inner>, line: Vec<u8>) {
     }
 }
 
-fn spawn_stderr(stderr: std::process::ChildStderr, inner: Arc<Inner>) {
+fn push_stderr(inner: &Inner, line: String) {
+    let mut tail = inner.stderr_tail.lock().unwrap();
+    tail.push_back(line);
+    let mut bytes: usize = tail.iter().map(String::len).sum();
+    while tail.len() > 200 || bytes > 1024 * 1024 {
+        bytes -= tail.pop_front().map_or(0, |line| line.len());
+    }
+}
+
+fn spawn_stderr(mut stderr: std::process::ChildStderr, inner: Arc<Inner>) {
     thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut line = String::new();
+        let mut framer = Framer::new(64 * 1024);
+        let mut chunk = [0u8; 4096];
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
+            match stderr.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(_) => {
-                    let mut tail = inner.stderr_tail.lock().unwrap();
-                    tail.push_back(line.trim_end().to_string());
-                    if tail.len() > 200 {
-                        tail.pop_front();
+                Ok(count) => {
+                    let previous = framer.oversized();
+                    for line in framer.push(&chunk[..count]) {
+                        push_stderr(&inner, String::from_utf8_lossy(&line).into_owned());
+                    }
+                    if framer.oversized() != previous {
+                        push_stderr(&inner, "[stderr line truncated at 64 KiB]".into());
                     }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
+        }
+        for line in framer.push(b"\n") {
+            push_stderr(&inner, String::from_utf8_lossy(&line).into_owned());
         }
     });
 }
@@ -551,8 +656,15 @@ fn spawn_stderr(stderr: std::process::ChildStderr, inner: Arc<Inner>) {
 fn spawn_waiter(mut child: Child, inner: Arc<Inner>) {
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
-        inner.closed.store(true, Ordering::SeqCst);
+        *inner.process_exit.lock().unwrap() = Some(code);
+        // Give the reader time to dispatch buffered final responses before failing requests.
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while !inner.reader_done.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        disconnect(&inner);
         inner.bus.publish(ClientEvent::Exited(code));
+        inner.bus.subscribers.lock().unwrap().clear();
     });
 }
 
@@ -567,7 +679,10 @@ fn kill_tree(pid: u32) {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         command.creation_flags(CREATE_NO_WINDOW);
-        let _ = command.status();
+        let result = command.status();
+        if !result.as_ref().is_ok_and(|status| status.success()) {
+            eprintln!("could not terminate pi process {pid}: {result:?}");
+        }
     }
     #[cfg(not(windows))]
     {
@@ -577,5 +692,26 @@ fn kill_tree(pid: u32) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_closed_transport_does_not_skip_termination_of_a_live_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = SpawnOptions::new(dir.path());
+        options.executable =
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/mock-pi.cjs"));
+        let client = PiClient::spawn(options).unwrap();
+        client.request(json!({"type":"ignore_eof"})).unwrap();
+        // This is the same terminal connection state set by the stdout reader.
+        disconnect(&client.inner);
+        assert!(client.is_closed());
+        assert!(client.inner.process_exit.lock().unwrap().is_none());
+        client.close().unwrap();
+        assert!(client.inner.process_exit.lock().unwrap().is_some());
+        client.close().unwrap();
     }
 }

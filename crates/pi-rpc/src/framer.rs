@@ -45,39 +45,36 @@ impl Framer {
     /// (without the trailing newline) that are now available, in order.
     pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
-        self.buf.extend_from_slice(data);
-
-        let mut consumed = 0usize;
-        while let Some(offset) = self.buf[consumed..].iter().position(|&b| b == b'\n') {
-            let end = consumed + offset;
-            let mut line = &self.buf[consumed..end];
-            consumed = end + 1;
-
+        for part in data.split_inclusive(|&byte| byte == b'\n') {
+            let complete = part.last() == Some(&b'\n');
+            let bytes = if complete {
+                &part[..part.len() - 1]
+            } else {
+                part
+            };
             if self.dropping {
-                // Discard the tail of an oversized record.
-                self.dropping = false;
+                if complete {
+                    self.dropping = false;
+                }
                 continue;
             }
-
-            if line.last() == Some(&b'\r') {
-                line = &line[..line.len() - 1];
-            }
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
+            if bytes.len() > self.max_line.saturating_sub(self.buf.len()) {
+                self.buf.clear();
+                self.oversized += 1;
+                self.dropping = !complete;
                 continue;
             }
-            out.push(line.to_vec());
-        }
-
-        if consumed > 0 {
-            self.buf.drain(..consumed);
-        }
-
-        if !self.dropping && self.buf.len() > self.max_line {
-            // No newline in sight within the limit: drop what we have and
-            // ignore the rest of this record once it eventually ends.
-            self.oversized += 1;
-            self.dropping = true;
-            self.buf.clear();
+            self.buf.extend_from_slice(bytes);
+            if complete {
+                if self.buf.last() == Some(&b'\r') {
+                    self.buf.pop();
+                }
+                if self.buf.iter().any(|byte| !byte.is_ascii_whitespace()) {
+                    out.push(std::mem::take(&mut self.buf));
+                } else {
+                    self.buf.clear();
+                }
+            }
         }
 
         out
@@ -142,5 +139,36 @@ mod tests {
         // The rest of the oversized record is discarded, then a fresh record parses.
         let got = lines(&mut framer, &[b"ijklmn\n{\"ok\":true}\n"]);
         assert_eq!(got, vec![r#"{"ok":true}"#]);
+    }
+
+    #[test]
+    fn complete_oversized_record_is_rejected_before_copying() {
+        let mut framer = Framer::new(16);
+        assert!(framer.push(b"012345678901234567890123456789\n").is_empty());
+        assert_eq!(framer.oversized(), 1);
+        assert_eq!(framer.buffered(), 0);
+        assert_eq!(framer.push(b"ok\n"), vec![b"ok".to_vec()]);
+    }
+
+    #[test]
+    fn endless_oversized_record_never_accumulates_dropped_bytes() {
+        let mut framer = Framer::new(16);
+        for _ in 0..100 {
+            assert!(framer.push(&[b'x'; 100]).is_empty());
+            assert_eq!(framer.buffered(), 0);
+        }
+        assert_eq!(framer.oversized(), 1);
+        assert_eq!(framer.push(b"tail\nok\n"), vec![b"ok".to_vec()]);
+    }
+
+    #[test]
+    fn chunks_split_inside_utf8_preserve_exact_bytes() {
+        let text = "中文\u{2028}x\r\n";
+        let mut framer = Framer::new(64);
+        let mut records = Vec::new();
+        for byte in text.as_bytes() {
+            records.extend(framer.push(std::slice::from_ref(byte)));
+        }
+        assert_eq!(records, vec!["中文\u{2028}x".as_bytes().to_vec()]);
     }
 }

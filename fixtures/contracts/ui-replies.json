@@ -1,0 +1,6 @@
+[
+  {"request":{"kind":"value","requestId":"u1","value":"hello"},"wire":{"type":"extension_ui_response","id":"u1","value":"hello"}},
+  {"request":{"kind":"confirmed","requestId":"u2","value":true},"wire":{"type":"extension_ui_response","id":"u2","confirmed":true}},
+  {"request":{"kind":"confirmed","requestId":"u3","value":false},"wire":{"type":"extension_ui_response","id":"u3","confirmed":false}},
+  {"request":{"kind":"cancelled","requestId":"u4"},"wire":{"type":"extension_ui_response","id":"u4","cancelled":true}}
+]
