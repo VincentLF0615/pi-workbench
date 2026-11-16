@@ -27,24 +27,19 @@
         pi 子进程：node pi-launcher.js --mode rpc [--session ...]
 ```
 
-## 当前状态：M0 – M4 全部完成
+## 当前版本：0.1.1
 
-已验证（本机 pi 1.5.2 + 默认模型 `magpie/codex/gpt-6.1-sol`）：
+本轮修复会话锁、分叉/克隆归属、扩展 UI 回复、会话树循环、图片发送、JSONL 长度限制、断连等待和 Git 特殊路径；补上统计字段与会话索引缓存。界面风格和官方 pi RPC 架构保持不变。
 
-| 能力 | 结果 |
-|---|---|
-| 发现并启动 pi（managed install） | ✅ `~/.pi/agent/bin/pi-launcher.js`，跟随 `install/current-version` |
-| `get_state` 握手 | ✅ sessionId / model / thinkingLevel |
-| `prompt` 流式回复 | ✅ 首 token 约 4–8s，事件按 JSONL 增量到达 |
-| 多轮 + 工具调用 | ✅ `read` 工具：`tool_execution_start/end` 正确解析 |
-| `agent_settled` 结束判定 | ✅ |
-| MSVC 工具链 + Tauri 2 全依赖编译 | ✅ VS BuildTools 2022 + Win11 SDK 26100 |
-| 前端类型检查 / 生产构建 | ✅ `tsc --noEmit` 干净，vite 构建 254KB（gzip 79KB） |
-| 桌面应用启动 | ✅ 31MB RSS，23 线程 |
-| Release 打包 | ✅ NSIS 2.24MB / MSI 3.32MB，单实例已验证 |
-| 单元测试 | ✅ 44 个单测 + 1 个文档测试，`clippy`/`fmt` 零警告 |
-| 对真实 pi 的集成冒烟 | ✅ 走完整 pump 批处理路径 |
-| 进程回收 | ✅ 关闭时先关 stdin，超时后 `taskkill /T /F` 杀整棵树 |
+- 注册表锁只用于查找和更新；既有会话的 RPC 与停止操作不会等待其他会话的长命令。
+- 分叉/克隆先恢复原会话，再打开新分支；失败后恢复原进程或重建它。首条消息之前的空分支会保留官方 RPC 条目快照。
+- 纯图片和图文消息支持 PNG/JPEG/WebP/GIF，单张 10 MiB、合计 20 MiB、最多 32 张；发送失败保留各标签自己的草稿。
+- stdout 以固定块读取，单条 JSONL 上限 64 MiB；stderr 最多 200 行、每行 64 KiB、合计 1 MiB。
+- 使用同一份 Windows 清单构建应用和测试，避免测试程序缺失 Common Controls v6 / TaskDialogIndirect。
+
+2026-11-16 验证：Rust 默认测试 81 项通过，2 项 opt-in 测试默认忽略；前端 14 项通过，类型检查、生产构建、fmt 和 Clippy 通过。本机 pi 1.5.2 的独立本地协议测试另外通过 1 项，覆盖恢复、克隆、分叉及空分支，不调用模型。真实模型网络冒烟未执行。
+
+详细修改及复现命令见 `docs/reliability-0.1.1.md`。
 
 ## 目录结构
 
@@ -135,9 +130,9 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
 
 ## 关键设计
 
-- **一个打开的会话 = 一个 pi 进程**，会话之间互不阻塞；关闭标签即回收进程树。
+- **一个打开的会话 = 一个 pi 进程**，会话之间互不阻塞；关闭标签时等待进程退出，必要时回收进程树。
 - **阻塞 IO + 线程**，不引入 async 运行时：写线程管 stdin，读线程管 stdout，stderr 线程留诊断尾巴，等待线程收尸。
-- **事件批处理在 pi-rpc 里**（`pump.rs`）：16ms 窗口、上限 64 条，UI 侧每帧最多一次更新；这部分可单测，不依赖 Tauri。
+- **事件批处理在 pi-rpc 里**（`pump.rs`）：16ms 窗口、上限 64 条，减少 UI 更新次数；这部分可单测，不依赖 Tauri。
 - **只按 `\n` 分帧**，绝不用会按 `U+2028/U+2029` 切分的通用行读取；单行上限 64 MiB，超限丢弃并重新同步。
 - **命令用 `id` 关联响应**；无 id 的 `parse` 错误走全局错误事件。
 - **协议容错**：未知事件、未知字段一律忽略/记日志，不崩。
@@ -150,7 +145,7 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
 2. **MSVC 是必须的**：Tauri 2 在 Windows 只支持 MSVC。本机已装：
    - VS BuildTools 2022（17.14）+ VCTools 14.44 + Win11 SDK 10.0.26100
    - `rustup default stable-x86_64-pc-windows-msvc`（rustc 1.100.0）
-   - `tools/dev.ps1` 的 `Invoke-BuildEnvironment` 会调 `vcvars64.bat` 把 `link.exe` 加进 PATH
+   - `tools/dev.ps1` 的 `Import-BuildEnvironment` 会调 `vcvars64.bat` 把 `link.exe` 加进 PATH
 3. **Windows GNU 工具链编译不了依赖 Windows API 的 crate**：rustup 自带的 `as.exe` 是残缺的，任何需要 `windows-sys` 的 crate 都卡在 `dlltool/as exited with status 53`。`pi-rpc` 是纯 Rust 所以 GNU 下能编，但 Tauri 不行。
 4. **受限沙箱里命名管道不可用**：.NET/Node 的管道式 stdio 在 DSH 受限沙箱里会 `EPERM`；Rust 的匿名管道可用，所以客户端用 Rust 是合适的。
 5. **winget 安装 VS 会被后台任务回收**：必须把安装程序脱离会话树独立提权运行（见 `tools/install-msvc.ps1`）。
@@ -169,14 +164,12 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
 pwsh -File tools\bundle.ps1
 ```
 
-产物位于 `%LOCALAPPDATA%\pi-workbench-target-msvc\release\bundle\`：
+产物位于 `%LOCALAPPDATA%\pi-workbench-target-msvc\release\bundle\`（可通过 `CARGO_TARGET_DIR` 覆盖）：
 
-| 安装包 | 大小 |
-|---|---|
-| `nsis\Pi Workbench_0.1.0_x64-setup.exe` | 2.24 MB |
-| `msi\Pi Workbench_0.1.0_x64_en-US.msi` | 3.32 MB |
+- `nsis/Pi Workbench_0.1.1_x64-setup.exe`
+- `msi/Pi Workbench_0.1.1_x64_en-US.msi`
 
-Release 运行时约 27MB 内存。安装后可从命令行或开始菜单启动，支持 `pi-workbench <目录>` 与 `pi-workbench --session <文件>`。
+安装后可从命令行或开始菜单启动，支持 `pi-workbench <目录>` 与 `pi-workbench --session <文件>`。
 
 ## 明确不做（本版范围外）
 

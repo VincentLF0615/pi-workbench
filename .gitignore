@@ -20,3 +20,7 @@ fixtures/*.jsonl
 **/__pycache__/
 **/*.tsbuildinfo
 
+
+# Generated Tauri schemas and verification data
+apps/desktop/src-tauri/gen/
+.verification/
