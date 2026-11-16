@@ -1,0 +1,22 @@
+# Build output. The dev helper also points CARGO_TARGET_DIR outside the
+# workspace (see tools/dev.ps1 and the README's integrity note).
+target/
+**/target/
+
+# Node / Tauri frontend
+node_modules/
+dist/
+*.log
+
+# Local scratch
+.fixtures-local/
+*.exe
+*.pdb
+
+# Local verification data
+.testtmp/
+fixtures/*.log
+fixtures/*.jsonl
+**/__pycache__/
+**/*.tsbuildinfo
+

@@ -1,0 +1,14 @@
+[package]
+name = "pi-probe"
+description = "Command line probe for the pi RPC protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pi-probe"
+path = "src/main.rs"
+
+[dependencies]
+pi-rpc = { path = "../../crates/pi-rpc" }
+serde_json.workspace = true

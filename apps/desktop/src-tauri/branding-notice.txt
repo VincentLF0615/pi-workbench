@@ -1,0 +1,12 @@
+Pi Workbench is a personal, unofficial desktop client for Pi.
+It is not affiliated with, sponsored by, or endorsed by Pi or Earendil.
+
+The Pi full-color mark is sourced from Pi's official Press Kit:
+https://pi.dev/press-kit
+Original artwork: https://pi.dev/logo.svg
+Retrieved: 2026-11-15
+
+The source SVG retains its original geometry and colors. Desktop raster
+exports only adjust transparent padding for small icon sizes.
+The mark belongs to its respective rights holders. Its inclusion does not
+claim ownership or official status. See docs/pi-branding.md in the source.
