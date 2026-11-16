@@ -53,7 +53,7 @@ pub fn status(project_dir: &Path) -> GitStatus {
             is_repo,
             branch: None,
             files: Vec::new(),
-            error: (!is_repo).then_some(message),
+            error: Some(message),
         };
     }
 
@@ -91,7 +91,12 @@ pub fn parse_porcelain_v2(text: &str) -> GitStatus {
         // prefix is: type, XY, sub, three mode columns, and two object ids.
         // A rename (`2`) adds one score field, hence the different counts.
         let kind = record.split(' ').next().unwrap_or("");
-        let splits = if kind == "2" { 10 } else { 9 };
+        let splits = match kind {
+            "2" => 10,
+            "u" => 11,
+            "?" => 2,
+            _ => 9,
+        };
         let fields: Vec<&str> = record.splitn(splits, ' ').collect();
         // Everything after the fixed-width prefix is the path.
         let path = fields.last().copied().unwrap_or("");
@@ -205,6 +210,16 @@ pub fn is_repo(project_dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untracked_and_unmerged_paths_keep_spaces_and_unicode() {
+        let status = parse_porcelain_v2(
+            "? my docs/中文 file.txt\0u UU N... 100644 100644 100644 100644 aaa bbb ccc src/冲突 file.rs\0",
+        );
+        assert_eq!(status.files[0].path, "my docs/中文 file.txt");
+        assert_eq!(status.files[1].path, "src/冲突 file.rs");
+        assert_eq!(status.files[1].status, "U");
+    }
 
     #[test]
     fn parses_branch_and_modified_files() {

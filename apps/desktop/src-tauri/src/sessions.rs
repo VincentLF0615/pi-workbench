@@ -10,7 +10,10 @@
 //! used as a preview. We only ever read these files: pi owns writing them.
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -20,7 +23,10 @@ pub fn default_sessions_dir() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)?;
-    let dir = home.join(".pi").join("agent").join("sessions");
+    let dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".pi").join("agent"))
+        .join("sessions");
     dir.is_dir().then_some(dir)
 }
 
@@ -144,11 +150,21 @@ fn dir_label(name: &str) -> Option<String> {
 
 /// Read a session file's header and first user message.
 pub fn read_session_file(path: &Path) -> Option<SessionFile> {
-    let content = fs::read_to_string(path).ok()?;
-    let mut lines = content.lines();
-
-    let header = lines.next()?;
-    let header: serde_json::Value = serde_json::from_str(header).ok()?;
+    type Cached = (SystemTime, u64, SessionFile);
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, Cached>>> = OnceLock::new();
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let cache = CACHE.get_or_init(Mutex::default);
+    if let Some((stamp, size, result)) = cache.lock().unwrap().get(path)
+        && *stamp == modified
+        && *size == metadata.len()
+    {
+        return Some(result.clone());
+    }
+    let file = fs::File::open(path).ok()?;
+    let mut lines = BufReader::new(file).split(b'\n');
+    let header = lines.next()?.ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header).ok()?;
     let id = header
         .get("id")
         .and_then(|value| value.as_str())
@@ -170,7 +186,10 @@ pub fn read_session_file(path: &Path) -> Option<SessionFile> {
     let mut preview = String::new();
     let mut message_count = 0usize;
     for line in lines {
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+        let Ok(line) = line else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<serde_json::Value>(&line) else {
             continue;
         };
         if record.get("type").and_then(|value| value.as_str()) != Some("message") {
@@ -199,14 +218,23 @@ pub fn read_session_file(path: &Path) -> Option<SessionFile> {
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default();
 
-    Some(SessionFile {
+    let result = SessionFile {
         path: path.to_string_lossy().to_string(),
         id,
         cwd,
         preview: truncate(&preview, 160),
         message_count,
         modified_at,
-    })
+    };
+    let mut cache = cache.lock().unwrap();
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        (modified, metadata.len(), result.clone()),
+    );
+    Some(result)
 }
 
 fn message_text(message: &serde_json::Value) -> String {
@@ -241,6 +269,30 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_index_refreshes_after_append_and_ignores_deleted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"session\",\"id\":\"test\",\"cwd\":\"C:/project\"}\n",
+        )
+        .unwrap();
+        assert_eq!(read_session_file(&path).unwrap().message_count, 0);
+        assert_eq!(read_session_file(&path).unwrap().message_count, 0);
+        use std::io::Write;
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}"
+        )
+        .unwrap();
+        let changed = read_session_file(&path).unwrap();
+        assert_eq!(changed.message_count, 1);
+        assert_eq!(changed.preview, "hello");
+        fs::remove_file(&path).unwrap();
+        assert!(read_session_file(&path).is_none());
+    }
 
     #[test]
     fn session_catalog_uses_the_frontend_field_names() {

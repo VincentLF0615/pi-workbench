@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 /// Where our settings live.
 pub fn settings_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PI_WORKBENCH_DATA_DIR") {
+        return Some(PathBuf::from(dir).join("settings.json"));
+    }
     let app_data = std::env::var_os("APPDATA").map(PathBuf::from)?;
     Some(app_data.join("pi-workbench").join("settings.json"))
 }

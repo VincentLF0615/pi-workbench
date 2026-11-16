@@ -13,8 +13,10 @@ use pi_workbench_lib::settings::{self, Settings};
 #[test]
 fn index_finds_the_session_pi_wrote() {
     let groups = sessions::list_sessions(None);
-    let files: Vec<&sessions::SessionFile> =
-        groups.iter().flat_map(|group| group.sessions.iter()).collect();
+    let files: Vec<&sessions::SessionFile> = groups
+        .iter()
+        .flat_map(|group| group.sessions.iter())
+        .collect();
 
     if files.is_empty() {
         // No session has been created on this machine yet; nothing to assert.
@@ -70,7 +72,10 @@ fn settings_save_and_load_round_trip() {
     assert_eq!(loaded.theme, "dark");
     assert_eq!(loaded.font_size, 17);
     assert_eq!(loaded.sidebar_width, 360);
-    assert_eq!(loaded.open_sessions, vec!["probe-session.jsonl".to_string()]);
+    assert_eq!(
+        loaded.open_sessions,
+        vec!["probe-session.jsonl".to_string()]
+    );
 }
 
 /// A partial file still loads, with defaults filling the gaps.

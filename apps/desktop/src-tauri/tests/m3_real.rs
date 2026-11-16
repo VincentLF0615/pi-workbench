@@ -67,12 +67,22 @@ fn git_reports_a_real_repository() {
     let status = git::status(&repo);
 
     assert!(status.is_repo, "the scratch repo should be a work tree");
-    assert!(status.error.is_none(), "unexpected error: {:?}", status.error);
+    assert!(
+        status.error.is_none(),
+        "unexpected error: {:?}",
+        status.error
+    );
     assert!(status.branch.is_some(), "a branch should be reported");
 
     let paths: Vec<&str> = status.files.iter().map(|file| file.path.as_str()).collect();
-    assert!(paths.contains(&"README.md"), "expected README.md, got {paths:?}");
-    assert!(paths.contains(&"notes.txt"), "expected notes.txt, got {paths:?}");
+    assert!(
+        paths.contains(&"README.md"),
+        "expected README.md, got {paths:?}"
+    );
+    assert!(
+        paths.contains(&"notes.txt"),
+        "expected notes.txt, got {paths:?}"
+    );
 
     let readme = status
         .files
@@ -98,7 +108,10 @@ fn git_diff_is_valid_output() {
     let repo = scratch_repo("git-diff");
     let diff = git::diff(&repo, Some("README.md"), false).expect("diff should run");
 
-    assert!(diff.contains("diff --git"), "expected a diff header: {diff}");
+    assert!(
+        diff.contains("diff --git"),
+        "expected a diff header: {diff}"
+    );
     assert!(diff.contains("+changed"), "expected the new line: {diff}");
     // No color escapes should leak into the text.
     assert!(!diff.contains('\u{1b}'), "diff should be plain text");
@@ -130,7 +143,10 @@ fn file_tree_lists_the_project() {
     // Generated and VCS directories must never appear.
     assert!(!names.contains(&"target"), "target/ must be skipped");
     assert!(!names.contains(&".git"), ".git must be skipped");
-    assert!(!names.contains(&"node_modules"), "node_modules must be skipped");
+    assert!(
+        !names.contains(&"node_modules"),
+        "node_modules must be skipped"
+    );
 
     // Directories sort before files.
     let first_file = nodes.iter().position(|node| !node.is_dir);

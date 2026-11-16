@@ -129,7 +129,10 @@ mod tests {
     #[test]
     fn a_session_flag_resumes_a_session() {
         let intent = from_args(["--session", "C:\\sessions\\a.jsonl"]).expect("an intent");
-        assert_eq!(intent.session_path.as_deref(), Some("C:\\sessions\\a.jsonl"));
+        assert_eq!(
+            intent.session_path.as_deref(),
+            Some("C:\\sessions\\a.jsonl")
+        );
         assert_eq!(intent.project_dir, None);
     }
 

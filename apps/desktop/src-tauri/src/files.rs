@@ -41,7 +41,11 @@ pub struct FileNode {
 }
 
 /// List one directory level (or the whole tree when `depth` allows).
-pub fn list_dir(root: &Path, relative: Option<&str>, depth: usize) -> Result<Vec<FileNode>, String> {
+pub fn list_dir(
+    root: &Path,
+    relative: Option<&str>,
+    depth: usize,
+) -> Result<Vec<FileNode>, String> {
     let target = match relative {
         Some(relative) if !relative.is_empty() => root.join(relative),
         _ => root.to_path_buf(),
@@ -107,7 +111,11 @@ pub fn read_text(path: &Path, max_bytes: usize) -> Result<TextFile, String> {
 
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let truncated = bytes.len() > max_bytes;
-    let slice = if truncated { &bytes[..max_bytes] } else { &bytes[..] };
+    let slice = if truncated {
+        &bytes[..max_bytes]
+    } else {
+        &bytes[..]
+    };
     let text = String::from_utf8_lossy(slice).to_string();
 
     Ok(TextFile {

@@ -59,6 +59,7 @@ pub fn run() {
             commands::open_session,
             commands::close_session,
             commands::get_state,
+            commands::get_session_snapshot,
             commands::get_messages,
             commands::get_session_stats,
             commands::get_available_models,
