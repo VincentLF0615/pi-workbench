@@ -18,19 +18,28 @@ import { api, onOpenRequest } from "./lib/api";
 
 /** Ask the preview pane to open a file. */
 function reveal(path: string) {
-  window.dispatchEvent(new CustomEvent("pi-workbench:reveal", { detail: { path } }));
+  window.dispatchEvent(
+    new CustomEvent("pi-workbench:reveal", { detail: { path } }),
+  );
 }
 
 /** The whole app: sidebar + session tabs + transcript + composer. */
 export default function App() {
   const store = useSessions();
-  const { active, sessions, activeId, install, loading, error, compatibility } = store;
+  const { active, sessions, activeId, install, loading, error, compatibility } =
+    store;
 
-  const [menu, setMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    sessionId: string;
+  } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
-  const [forkMessages, setForkMessages] = useState<{ entryId: string; text: string }[] | null>(null);
+  const [forkMessages, setForkMessages] = useState<
+    { entryId: string; text: string }[] | null
+  >(null);
   const [treeOpen, setTreeOpen] = useState(false);
   const [dockOpen, setDockOpen] = useState(true);
   const [dockTab, setDockTab] = useState<DockTab>("files");
@@ -54,10 +63,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [store]);
 
+  const loadTree = store.loadTree;
   // Load the tree when its panel opens.
   useEffect(() => {
-    if (treeOpen) void store.loadTree();
-  }, [treeOpen, store]);
+    if (treeOpen) void loadTree();
+  }, [treeOpen, loadTree]);
 
   // A second launch forwards its arguments here; open them immediately.
   //
@@ -75,16 +85,25 @@ export default function App() {
         if (intent?.project_dir) {
           await store.openProject(intent.project_dir);
         }
-      })().catch((cause) => console.error("Unable to open launch request", cause));
+      })().catch((cause) =>
+        console.error("Unable to open launch request", cause),
+      );
     });
   }, [store.openProject, store.projects]);
 
   // Remember the last project so a restart can offer it again.
   useEffect(() => {
-    if (active?.info.projectDir && store.settings?.lastProject !== active.info.projectDir) {
+    if (
+      active?.info.projectDir &&
+      store.settings?.lastProject !== active.info.projectDir
+    ) {
       void store.updateSettings({ lastProject: active.info.projectDir });
     }
-  }, [active?.info.projectDir, store.settings?.lastProject, store.updateSettings]);
+  }, [
+    active?.info.projectDir,
+    store.settings?.lastProject,
+    store.updateSettings,
+  ]);
 
   const runCommand = useCallback(
     (name: string) => {
@@ -109,11 +128,15 @@ export default function App() {
 
   const menuItems: MenuItem[] = activeId
     ? [
-        { label: "重命名", onSelect: () => {
-          const current = sessions.find((s) => s.info.id === activeId)?.info.label ?? "";
-          const name = window.prompt("会话名称", current);
-          if (name) void store.rename(name);
-        } },
+        {
+          label: "重命名",
+          onSelect: () => {
+            const current =
+              sessions.find((s) => s.info.id === activeId)?.info.label ?? "";
+            const name = window.prompt("会话名称", current);
+            if (name) void store.rename(name);
+          },
+        },
         { label: "从这里分叉…", onSelect: () => void openFork() },
         { label: "克隆为新会话", onSelect: () => void store.clone() },
         { kind: "separator" },
@@ -148,17 +171,27 @@ export default function App() {
     : [];
 
   return (
-    <div className="app" style={{ gridTemplateColumns: `${store.settings?.sidebarWidth ?? 300}px 1fr` }}>
+    <div
+      className="app"
+      style={{
+        gridTemplateColumns: `${store.settings?.sidebarWidth ?? 300}px 1fr`,
+      }}
+    >
       <Sidebar
         projects={store.projects}
         sessions={sessions}
         activeId={activeId}
         onSelect={store.setActiveId}
-        onOpen={(projectDir, sessionPath) => void store.openProject(projectDir, sessionPath)}
+        onOpen={(projectDir, sessionPath) =>
+          void store.openProject(projectDir, sessionPath)
+        }
         onClose={(id) => void store.closeSession(id)}
         onNewSession={() => {
           const last = sessions[sessions.length - 1];
-          const dir = last?.info.projectDir ?? store.settings?.lastProject ?? "E:\\default-workspace";
+          const dir =
+            last?.info.projectDir ??
+            store.settings?.lastProject ??
+            "E:\\default-workspace";
           void store.openProject(dir);
         }}
       />
@@ -166,13 +199,16 @@ export default function App() {
       <main className="main">
         {!install?.found && !loading && (
           <div className="banner warn">
-            没有找到 pi：{install?.error ?? "未知原因"}。请先安装 pi 并登录，或在项目目录里运行
+            没有找到 pi：{install?.error ?? "未知原因"}。请先安装 pi
+            并登录，或在项目目录里运行
             <code>pi auth login</code>。
           </div>
         )}
         {error && <div className="banner error">{error}</div>}
         {compatibility && compatibility.level !== "ok" && (
-          <div className={`banner ${compatibility.level === "unknown" ? "warn" : "warn"}`}>
+          <div
+            className={`banner ${compatibility.level === "unknown" ? "warn" : "warn"}`}
+          >
             {compatibility.message}
             {compatibility.level !== "unknown" && (
               <>
@@ -200,7 +236,11 @@ export default function App() {
                 onContextMenu={(event) => {
                   event.preventDefault();
                   store.setActiveId(runtime.info.id);
-                  setMenu({ x: event.clientX, y: event.clientY, sessionId: runtime.info.id });
+                  setMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    sessionId: runtime.info.id,
+                  });
                 }}
                 title={runtime.info.projectDir}
               >
@@ -246,9 +286,19 @@ export default function App() {
                 )}
               </div>
               <div className="toolbar-right">
-                <button type="button" className="btn ghost" aria-label="最小化到托盘"
+                <button
+                  type="button"
+                  className="btn ghost"
+                  aria-label="最小化到托盘"
                   title="最小化到托盘，后台任务继续运行"
-                  onClick={() => { void api.minimizeToTray().catch((cause) => console.error("Unable to minimize to tray", cause)); }}>
+                  onClick={() => {
+                    void api
+                      .minimizeToTray()
+                      .catch((cause) =>
+                        console.error("Unable to minimize to tray", cause),
+                      );
+                  }}
+                >
                   托盘
                 </button>
                 <button
@@ -289,7 +339,7 @@ export default function App() {
                   onClick={() => setDockOpen(!dockOpen)}
                   title="右侧工作台（Ctrl+B）"
                 >
-                 面板
+                  面板
                 </button>
                 <button
                   type="button"
@@ -319,7 +369,9 @@ export default function App() {
                 )}
                 <ExtensionDialogs
                   requests={active.uiRequests}
-                  onAnswer={(requestId, reply) => void store.answerUi(requestId, reply)}
+                  onAnswer={(requestId, reply) =>
+                    store.answerUi(requestId, reply)
+                  }
                 />
               </div>
               {dockOpen && (
@@ -337,24 +389,32 @@ export default function App() {
             </div>
 
             <Composer
+              key={active.info.id}
               sessionId={active.info.id}
               busy={active.busy}
-              onSend={(text) => void store.send(text)}
-              onSteer={(text) => void store.steer(text)}
+              disabled={active.info.closed || !active.state}
+              model={active.state?.model}
+              draft={active.draft}
+              onDraftChange={(draft) => store.setDraft(active.info.id, draft)}
+              onSend={store.send}
+              onSteer={store.steer}
               onAbort={() => void store.abort()}
             />
 
-            {active.stats?.tokens != null && (
+            {active.stats?.totalTokens != null && (
               <footer className="statusbar">
                 <span>
-                  {active.info.projectDir} · pid {active.info.pid} · {active.info.launchSource}
+                  {active.info.projectDir} · pid {active.info.pid} ·{" "}
+                  {active.info.launchSource}
                 </span>
                 <span>
-                  tokens {formatTokens(active.stats.tokens)}
+                  tokens {formatTokens(active.stats.totalTokens!)}
                   {active.stats.contextWindow
                     ? ` / ${formatTokens(active.stats.contextWindow)}`
                     : ""}
-                  {active.state?.sessionFile ? ` · ${active.state.sessionFile}` : ""}
+                  {active.state?.sessionFile
+                    ? ` · ${active.state.sessionFile}`
+                    : ""}
                 </span>
               </footer>
             )}
@@ -371,18 +431,18 @@ export default function App() {
                     ? `已就绪：pi ${install.version ?? ""}`
                     : "未检测到 pi"}
                 </p>
-                <p className="muted">在左侧选择项目开始，或点「打开项目」输入目录。</p>
-                <p className="muted">Ctrl+K 打开命令面板 · 右键标签页重命名/分叉/删除</p>
+                <p className="muted">
+                  在左侧选择项目开始，或点「打开项目」输入目录。
+                </p>
+                <p className="muted">
+                  Ctrl+K 打开命令面板 · 右键标签页重命名/分叉/删除
+                </p>
               </>
             )}
           </div>
         )}
 
-        <Menu
-          anchor={menu}
-          items={menuItems}
-          onClose={() => setMenu(null)}
-        />
+        <Menu anchor={menu} items={menuItems} onClose={() => setMenu(null)} />
 
         <CommandPalette
           open={paletteOpen}

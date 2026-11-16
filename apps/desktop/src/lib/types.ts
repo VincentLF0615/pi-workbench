@@ -50,7 +50,8 @@ export interface PiTokens {
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  totalTokens: number;
+  total: number;
+  totalTokens?: number;
 }
 
 /** Content blocks of an assistant message. */
@@ -150,6 +151,7 @@ export type PiEnvelope =
 
 export interface PiBatch {
   sessionId: string;
+  generation: number;
   events: PiEnvelope[];
 }
 
@@ -168,7 +170,11 @@ export type PiEvent =
   | { type: "turn_start" }
   | { type: "turn_end"; message: PiMessage; toolResults: PiMessage[] }
   | { type: "message_start"; message: PiMessage }
-  | { type: "message_update"; usage: PiUsage; assistantMessageEvent: AssistantMessageEvent }
+  | {
+      type: "message_update";
+      usage: PiUsage;
+      assistantMessageEvent: AssistantMessageEvent;
+    }
   | { type: "message_end"; message: PiMessage }
   | {
       type: "tool_execution_start";
@@ -211,7 +217,12 @@ export type PiEvent =
       delayMs: number;
       errorMessage: string;
     }
-  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | {
+      type: "auto_retry_end";
+      success: boolean;
+      attempt: number;
+      finalError?: string;
+    }
   | {
       type: "summarization_retry_scheduled";
       attempt: number;
@@ -219,10 +230,19 @@ export type PiEvent =
       delayMs: number;
       errorMessage: string;
     }
-  | { type: "summarization_retry_attempt_start"; source: string; reason?: string }
+  | {
+      type: "summarization_retry_attempt_start";
+      source: string;
+      reason?: string;
+    }
   | { type: "summarization_retry_finished" }
   | { type: "bash_execution_update"; id?: string; delta: string }
-  | { type: "extension_error"; extensionPath: string; event: string; error: string };
+  | {
+      type: "extension_error";
+      extensionPath: string;
+      event: string;
+      error: string;
+    };
 
 /** Extension UI request (`select`, `confirm`, `input`, `editor`, ...). */
 export interface UiRequest {
@@ -234,6 +254,7 @@ export interface UiRequest {
   placeholder?: string;
   prefill?: string;
   timeout?: number;
+  expiresAt?: number;
   [key: string]: unknown;
 }
 
@@ -265,6 +286,7 @@ export interface SessionInfo {
   projectDir: string;
   sessionPath?: string;
   pid: number;
+  generation: number;
   launchSource: string;
   closed: boolean;
   lastError?: string;
@@ -318,8 +340,20 @@ export type TranscriptItem =
       isError: boolean;
       durationMs?: number;
     }
-  | { kind: "bash"; id: string; command: string; output: string; exitCode?: number | null }
-  | { kind: "compaction"; id: string; summary: string; tokensBefore?: number; reason: string }
+  | {
+      kind: "bash";
+      id: string;
+      command: string;
+      output: string;
+      exitCode?: number | null;
+    }
+  | {
+      kind: "compaction";
+      id: string;
+      summary: string;
+      tokensBefore?: number;
+      reason: string;
+    }
   | { kind: "info"; id: string; text: string; tone: "info" | "warn" | "error" };
 
 /** Text content of any message, or of a tool result payload. */
@@ -329,7 +363,9 @@ export function textOfContent(
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((block) => (block && typeof block === "object" ? (block.text ?? "") : ""))
+    .map((block) =>
+      block && typeof block === "object" ? (block.text ?? "") : "",
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -337,7 +373,10 @@ export function textOfContent(
 /** Text of a pi message, for roles that carry text. */
 export function messageText(message: PiMessage): string {
   if (message.role === "bashExecution") return message.output;
-  if (message.role === "compactionSummary" || message.role === "branchSummary") {
+  if (
+    message.role === "compactionSummary" ||
+    message.role === "branchSummary"
+  ) {
     return message.summary;
   }
   return textOfContent(message.content);
@@ -428,4 +467,26 @@ export interface TextFile {
 export interface StartupIntent {
   project_dir: string | null;
   session_path: string | null;
+}
+
+export interface ImageContent {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+export interface Draft {
+  text: string;
+  images: ImageContent[];
+}
+export interface SessionSnapshot {
+  info: SessionInfo;
+  state: PiState;
+  messages: PiMessage[];
+  stats: SessionStats;
+}
+export interface BranchResult {
+  cancelled: boolean;
+  original: SessionSnapshot;
+  branch?: SessionSnapshot | null;
+  selectedText?: string | null;
 }

@@ -1,13 +1,16 @@
 {
   "name": "pi-workbench-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "format:check": "prettier --check src/App.tsx src/components/Composer.tsx src/components/Transcript.tsx src/lib/api.ts src/lib/store.ts src/lib/types.ts src/lib/transcript.ts src/lib/stats.ts src/lib/images.ts src/reliability.test.tsx vitest.config.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -17,10 +20,15 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.12",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^31.0.1",
+    "prettier": "^3.10.1",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^5.1.0"
   }
 }

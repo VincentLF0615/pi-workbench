@@ -1,32 +1,38 @@
 import { useEffect, useRef, useState } from "react";
-
 import { api } from "../lib/api";
-import type { UiRequest } from "../lib/types";
+import { readImage, validateImages } from "../lib/images";
+import type { Draft, ImageContent, PiModel, UiRequest } from "../lib/types";
 
-/** The composer: text entry, image paste, send/stop and steer. */
 export function Composer({
   sessionId,
   busy,
+  disabled = false,
+  model,
+  draft,
+  onDraftChange,
   onSend,
   onSteer,
   onAbort,
 }: {
   sessionId: string | null;
   busy: boolean;
-  onSend: (text: string) => void;
-  onSteer: (text: string) => void;
+  disabled?: boolean;
+  model?: PiModel | null;
+  draft: Draft;
+  onDraftChange: (draft: Draft) => void;
+  onSend: (text: string, images: ImageContent[]) => Promise<void>;
+  onSteer: (text: string, images: ImageContent[]) => Promise<void>;
   onAbort: () => void;
 }) {
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<string[]>([]);
-  const [mode, setMode] = useState<"send" | "steer">("send");
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    setMode(busy ? "steer" : "send");
-  }, [busy]);
-
-  // Esc aborts the run, matching the terminal client.
+  const [pending, setPending] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const change = (next: Draft) => {
+    draftRef.current = next;
+    onDraftChange(next);
+  };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && busy) {
@@ -38,65 +44,81 @@ export function Composer({
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onAbort]);
 
-  const submit = () => {
-    const value = text.trim();
-    if (!value || !sessionId) return;
-    if (mode === "steer") onSteer(value);
-    else onSend(value);
-    setText("");
-    setImages([]);
-  };
-
-  const onPaste = (event: React.ClipboardEvent) => {
-    const files = Array.from(event.clipboardData.files ?? []);
-    const image = files.find((file) => file.type.startsWith("image/"));
-    if (!image) return;
-    event.preventDefault();
-    // Images are sent as base64 data URLs; the backend forwards them to pi.
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setImages((current) => [...current, reader.result as string]);
+  const submit = async () => {
+    if (
+      pending ||
+      reading ||
+      disabled ||
+      !sessionId ||
+      (!draft.text.trim() && !draft.images.length)
+    )
+      return;
+    setError(null);
+    try {
+      validateImages(draft.images);
+      if (
+        draft.images.length &&
+        (!Array.isArray(model?.input) || !model.input.includes("image"))
+      ) {
+        throw new Error("当前模型不支持图片，请切换支持图片的模型");
       }
-    };
-    reader.readAsDataURL(image);
+      setPending(true);
+      const content = { text: draft.text.trim(), images: draft.images };
+      await (busy ? onSteer : onSend)(content.text, content.images);
+      change({ text: "", images: [] });
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPending(false);
+    }
   };
 
-  const onDrop = (event: React.DragEvent) => {
-    const files = Array.from(event.dataTransfer.files ?? []);
-    const image = files.find((file) => file.type.startsWith("image/"));
-    if (!image) return;
-    event.preventDefault();
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setImages((current) => [...current, reader.result as string]);
-      }
-    };
-    reader.readAsDataURL(image);
-  };
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter sends, Shift+Enter inserts a newline. This works with CJK IMEs
-    // because we check the composition state.
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      submit();
+  const attach = async (files: File[]) => {
+    if (pending || reading || disabled) return;
+    setReading(true);
+    setError(null);
+    try {
+      const added = await Promise.all(files.map(readImage));
+      const images = [...draftRef.current.images, ...added];
+      validateImages(images);
+      change({ ...draftRef.current, images });
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setReading(false);
     }
   };
 
   return (
-    <div className="composer" onDrop={onDrop}>
-      {images.length > 0 && (
+    <div
+      className="composer"
+      onDragOver={(event) => {
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        void attach(Array.from(event.dataTransfer.files));
+      }}
+    >
+      {draft.images.length > 0 && (
         <div className="composer-images">
-          {images.map((image, index) => (
+          {draft.images.map((image, index) => (
             <div key={index} className="composer-image">
-              <img src={image} alt={`attachment ${index + 1}`} />
+              <img
+                src={`data:${image.mimeType};base64,${image.data}`}
+                alt={`attachment ${index + 1}`}
+              />
               <button
                 type="button"
                 className="composer-image-remove"
-                onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
+                disabled={pending || reading}
                 aria-label="remove image"
+                onClick={() =>
+                  change({
+                    ...draft,
+                    images: draft.images.filter((_, i) => i !== index),
+                  })
+                }
               >
                 ×
               </button>
@@ -104,21 +126,51 @@ export function Composer({
           ))}
         </div>
       )}
+      {error && (
+        <div role="alert" className="row-error">
+          {error}
+        </div>
+      )}
       <div className="composer-main">
         <textarea
-          ref={ref}
           className="composer-input"
-          placeholder={sessionId ? "输入消息，Enter 发送，Shift+Enter 换行" : "先打开一个会话"}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          disabled={!sessionId}
+          aria-label="消息"
+          placeholder={
+            sessionId
+              ? "输入消息，Enter 发送，Shift+Enter 换行"
+              : "先打开一个会话"
+          }
+          value={draft.text}
           rows={3}
+          disabled={!sessionId || disabled || pending}
+          onChange={(event) => change({ ...draft, text: event.target.value })}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files).filter((file) =>
+              file.type.startsWith("image/"),
+            );
+            if (files.length) {
+              event.preventDefault();
+              void attach(files);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
         />
         <div className="composer-actions">
           <span className="composer-hint">
-            {busy ? "pi 正在运行 · Esc 停止" : "Enter 发送"}
+            {reading
+              ? "正在读取图片…"
+              : busy
+                ? "pi 正在运行 · Esc 停止"
+                : "Enter 发送"}
           </span>
           {busy && (
             <button type="button" className="btn ghost" onClick={onAbort}>
@@ -127,11 +179,17 @@ export function Composer({
           )}
           <button
             type="button"
-            className={`btn ${mode === "steer" ? "secondary" : "primary"}`}
-            onClick={submit}
-            disabled={!sessionId || !text.trim()}
+            className={`btn ${busy ? "secondary" : "primary"}`}
+            onClick={() => void submit()}
+            disabled={
+              !sessionId ||
+              disabled ||
+              pending ||
+              reading ||
+              (!draft.text.trim() && !draft.images.length)
+            }
           >
-            {mode === "steer" ? "追加指令" : "发送"}
+            {pending ? "提交中…" : busy ? "追加指令" : "发送"}
           </button>
         </div>
       </div>
@@ -191,7 +249,7 @@ export function ExtensionDialogs({
   onAnswer: (
     requestId: string,
     reply: { kind: "value" | "confirmed" | "cancelled"; value?: string },
-  ) => void;
+  ) => void | Promise<void>;
 }) {
   if (requests.length === 0) return null;
   return (
@@ -211,30 +269,54 @@ function Dialog({
   onAnswer: (
     requestId: string,
     reply: { kind: "value" | "confirmed" | "cancelled"; value?: string },
-  ) => void;
+  ) => void | Promise<void>;
 }) {
   const [value, setValue] = useState(request.prefill ?? "");
   const title = request.title || request.message || request.method;
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const answer = async (reply: {
+    kind: "value" | "confirmed" | "cancelled";
+    value?: string;
+  }) => {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onAnswer(request.id, reply);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPending(false);
+    }
+  };
 
   if (request.method === "select") {
     return (
       <div className="dialog">
         <div className="dialog-title">{title}</div>
+        {error && (
+          <div role="alert" className="row-error">
+            {error}
+          </div>
+        )}
         <div className="dialog-options">
           {(request.options ?? []).map((option) => (
             <button
               key={option}
               type="button"
+              disabled={pending}
               className="btn secondary"
-              onClick={() => onAnswer(request.id, { kind: "value", value: option })}
+              onClick={() => void answer({ kind: "value", value: option })}
             >
               {option}
             </button>
           ))}
           <button
             type="button"
+            disabled={pending}
             className="btn ghost"
-            onClick={() => onAnswer(request.id, { kind: "cancelled" })}
+            onClick={() => void answer({ kind: "cancelled" })}
           >
             取消
           </button>
@@ -247,19 +329,28 @@ function Dialog({
     return (
       <div className="dialog">
         <div className="dialog-title">{title}</div>
-        {request.message && <div className="dialog-message">{request.message}</div>}
+        {error && (
+          <div role="alert" className="row-error">
+            {error}
+          </div>
+        )}
+        {request.message && (
+          <div className="dialog-message">{request.message}</div>
+        )}
         <div className="dialog-options">
           <button
             type="button"
+            disabled={pending}
             className="btn primary"
-            onClick={() => onAnswer(request.id, { kind: "confirmed", value: "true" })}
+            onClick={() => void answer({ kind: "confirmed", value: "true" })}
           >
             确认
           </button>
           <button
             type="button"
+            disabled={pending}
             className="btn secondary"
-            onClick={() => onAnswer(request.id, { kind: "confirmed", value: "false" })}
+            onClick={() => void answer({ kind: "confirmed", value: "false" })}
           >
             取消
           </button>
@@ -273,6 +364,11 @@ function Dialog({
     return (
       <div className="dialog">
         <div className="dialog-title">{title}</div>
+        {error && (
+          <div role="alert" className="row-error">
+            {error}
+          </div>
+        )}
         {multiline ? (
           <textarea
             className="dialog-input"
@@ -289,22 +385,24 @@ function Dialog({
             onChange={(event) => setValue(event.target.value)}
             autoFocus
             onKeyDown={(event) => {
-              if (event.key === "Enter") onAnswer(request.id, { kind: "value", value });
+              if (event.key === "Enter") void answer({ kind: "value", value });
             }}
           />
         )}
         <div className="dialog-options">
           <button
             type="button"
+            disabled={pending}
             className="btn primary"
-            onClick={() => onAnswer(request.id, { kind: "value", value })}
+            onClick={() => void answer({ kind: "value", value })}
           >
             提交
           </button>
           <button
             type="button"
+            disabled={pending}
             className="btn ghost"
-            onClick={() => onAnswer(request.id, { kind: "cancelled" })}
+            onClick={() => void answer({ kind: "cancelled" })}
           >
             取消
           </button>

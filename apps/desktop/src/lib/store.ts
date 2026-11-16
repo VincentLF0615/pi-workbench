@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, onPiEvents, onToasts } from "./api";
 import {
-  messageText,
-  textOfContent,
-  toolResultText,
-} from "./types";
+  api,
+  onPiEvents,
+  onToasts,
+  onSessionOpened,
+  onSessionSnapshot,
+} from "./api";
+import { applyEvent, fromHistory, nextId } from "./transcript";
+import { normalizeStats } from "./stats";
+import { messageText } from "./types";
 import type {
-  AssistantBlock,
   PiBatch,
-  PiEnvelope,
-  PiMessage,
   PiState,
   SessionFileInfo,
   SessionInfo,
+  SessionSnapshot,
+  ImageContent,
+  Draft,
+  UiRequest,
   SessionTreeNode,
   Settings,
   SlashCommand,
@@ -21,16 +26,14 @@ import type {
   UiReply,
 } from "./types";
 
-let itemSeq = 0;
-const nextId = () => `i${++itemSeq}`;
-
 /** Live per-session state kept by the frontend. */
 export interface SessionRuntime {
   info: SessionInfo;
   transcript: TranscriptItem[];
   state: PiState | null;
-  stats: { tokens?: number; contextWindow?: number; percent?: number | null; cost?: number } | null;
-  uiRequests: { id: string; method: string; title?: string; message?: string; options: string[]; placeholder?: string; prefill?: string }[];
+  stats: ReturnType<typeof normalizeStats> | null;
+  draft: Draft;
+  uiRequests: UiRequest[];
   busy: boolean;
   toasts: { id: number; message: string }[];
   /** Session tree, loaded on demand. */
@@ -55,7 +58,9 @@ export type PiCompatibility =
 export const TESTED_PI = "1.5";
 
 /** Compare an installed pi version against `TESTED_PI`. */
-export function checkPiCompatibility(version: string | undefined): PiCompatibility {
+export function checkPiCompatibility(
+  version: string | undefined,
+): PiCompatibility {
   if (!version) {
     return { level: "unknown", message: "无法读取 pi 版本" };
   }
@@ -81,362 +86,6 @@ export function checkPiCompatibility(version: string | undefined): PiCompatibili
   return { level: "ok", message: `pi ${version} 已兼容` };
 }
 
-interface ReducerResult {
-  items: TranscriptItem[];
-  busy: boolean;
-}
-
-/** Replace the last matching item, immutably. */
-function patchLast(
-  items: TranscriptItem[],
-  matches: (item: TranscriptItem) => boolean,
-  change: (item: TranscriptItem) => TranscriptItem,
-): TranscriptItem[] {
-  const index = [...items].reverse().findIndex(matches);
-  if (index === -1) return items;
-  const at = items.length - 1 - index;
-  const updated = items.slice();
-  updated[at] = change(items[at]);
-  return updated;
-}
-
-/** Replace the first matching item, immutably. */
-function patchFirst(
-  items: TranscriptItem[],
-  matches: (item: TranscriptItem) => boolean,
-  change: (item: TranscriptItem) => TranscriptItem,
-): TranscriptItem[] {
-  const index = items.findIndex(matches);
-  if (index === -1) return items;
-  const updated = items.slice();
-  updated[index] = change(items[index]);
-  return updated;
-}
-
-const isStreamingAssistant = (item: TranscriptItem) =>
-  item.kind === "assistant" && item.streaming;
-
-const isToolWithId = (toolCallId: string) => (item: TranscriptItem) =>
-  item.kind === "tool" && item.toolCallId === toolCallId;
-
-/** Fold a `get_messages` history into transcript items. */
-function fromHistory(messages: PiMessage[]): TranscriptItem[] {
-  const items: TranscriptItem[] = [];
-  const toolIds = new Map<string, string>();
-
-  for (const message of messages) {
-    switch (message.role) {
-      case "user": {
-        const text = textOfContent(message.content);
-        if (text.trim()) items.push({ kind: "user", id: nextId(), text, images: 0 });
-        break;
-      }
-      case "assistant": {
-        const blocks: AssistantBlock[] = [];
-        for (const block of message.content) {
-          if (block.type === "text" && block.text.trim()) {
-            blocks.push({ type: "text", text: block.text });
-          } else if (block.type === "thinking" && block.thinking.trim()) {
-            blocks.push({ type: "thinking", thinking: block.thinking });
-          } else if (block.type === "toolCall") {
-            blocks.push({
-              type: "toolCall",
-              id: block.id,
-              name: block.name,
-              arguments: block.arguments,
-            });
-            const toolId = nextId();
-            toolIds.set(block.id, toolId);
-            items.push({
-              kind: "tool",
-              id: toolId,
-              toolCallId: block.id,
-              name: block.name,
-              args: (block.arguments ?? {}) as Record<string, unknown>,
-              state: "ok",
-              isError: false,
-            });
-          }
-        }
-        if (blocks.length > 0) {
-          items.push({
-            kind: "assistant",
-            id: nextId(),
-            blocks,
-            usage: message.usage,
-            stopReason: message.stopReason,
-            errorMessage: message.errorMessage,
-            streaming: false,
-          });
-        }
-        break;
-      }
-      case "toolResult": {
-        const toolId = toolIds.get(message.toolCallId);
-        if (!toolId) break;
-        const item = items.find((entry) => entry.id === toolId && entry.kind === "tool");
-        if (item && item.kind === "tool") {
-          item.resultText = toolResultText(message.content);
-          item.isError = message.isError;
-          item.state = message.isError ? "error" : "ok";
-        }
-        break;
-      }
-      case "bashExecution": {
-        items.push({
-          kind: "bash",
-          id: nextId(),
-          command: message.command,
-          output: message.output,
-          exitCode: message.exitCode,
-        });
-        break;
-      }
-      case "compactionSummary": {
-        items.push({
-          kind: "compaction",
-          id: nextId(),
-          summary: message.summary,
-          tokensBefore: message.tokensBefore,
-          reason: "context",
-        });
-        break;
-      }
-      case "branchSummary": {
-        items.push({ kind: "info", id: nextId(), text: message.summary, tone: "info" });
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  return items;
-}
-
-/** Apply one protocol event to a transcript. */
-function applyEvent(items: TranscriptItem[], envelope: PiEnvelope, busy: boolean): ReducerResult {
-  const next = items.slice();
-
-  if (envelope.kind !== "pi") {
-    if (envelope.kind === "exited") {
-      next.push({
-        kind: "info",
-        id: nextId(),
-        text: `pi 进程已退出（code ${envelope.code ?? "?"}）`,
-        tone: "error",
-      });
-    }
-    if (envelope.kind === "protocolError") {
-      next.push({ kind: "info", id: nextId(), text: envelope.message, tone: "warn" });
-    }
-    return { items: next, busy: envelope.kind === "exited" ? false : busy };
-  }
-
-  const event = envelope.event;
-  switch (event.type) {
-    case "agent_start":
-      return { items: next, busy: true };
-
-    case "agent_settled":
-      return { items: next, busy: false };
-
-    case "message_start": {
-      const message = event.message;
-      if (message.role === "user") {
-        const text = textOfContent(message.content);
-        const last = next[next.length - 1];
-        // send() already displayed this message while waiting for pi's echo.
-        if (text.trim() && !(last?.kind === "user" && last.text === text)) {
-          next.push({ kind: "user", id: nextId(), text, images: 0 });
-        }
-      } else if (message.role === "assistant") {
-        next.push({ kind: "assistant", id: nextId(), blocks: [], streaming: true });
-      } else if (message.role === "bashExecution") {
-        next.push({
-          kind: "bash",
-          id: nextId(),
-          command: message.command,
-          output: "",
-          exitCode: message.exitCode,
-        });
-      }
-      return { items: next, busy: true };
-    }
-
-    case "message_update": {
-      const nested = event.assistantMessageEvent;
-      if (!nested) return { items: next, busy: true };
-      if (nested.type === "toolcall_delta") {
-        // Arguments stream as JSON text; the tool card is created by
-        // tool_execution_start, which already carries the parsed arguments.
-        return { items: next, busy: true };
-      }
-
-      const index = nested.contentIndex ?? 0;
-      const isDelta = nested.type.endsWith("_delta");
-      const blockType =
-        nested.type === "text_delta" || nested.type === "text_end"
-          ? "text"
-          : nested.type === "thinking_delta" || nested.type === "thinking_end"
-            ? "thinking"
-            : null;
-
-      if (blockType) {
-        const delta = isDelta ? (nested.delta ?? "") : (nested.content ?? "");
-        const updated = patchLast(next, isStreamingAssistant, (item) => {
-          if (item.kind !== "assistant") return item;
-          const blocks = item.blocks.slice();
-          const existing = blocks[index];
-          if (existing && existing.type === blockType) {
-            const current =
-              blockType === "text"
-                ? (existing as Extract<AssistantBlock, { type: "text" }>).text
-                : (existing as Extract<AssistantBlock, { type: "thinking" }>).thinking;
-            blocks[index] = {
-              ...existing,
-              [blockType]: isDelta ? current + delta : delta,
-            } as AssistantBlock;
-          } else {
-            blocks[index] = (
-              blockType === "text"
-                ? { type: "text", text: delta }
-                : { type: "thinking", thinking: delta }
-            ) as AssistantBlock;
-          }
-          return { ...item, blocks };
-        });
-        return { items: updated, busy: true };
-      }
-
-      if (nested.type === "toolcall_start") {
-        const updated = patchLast(next, isStreamingAssistant, (item) => {
-          if (item.kind !== "assistant") return item;
-          const blocks = item.blocks.slice();
-          blocks[index] = {
-            type: "toolCall",
-            id: nested.id ?? nextId(),
-            name: nested.toolName ?? "tool",
-            arguments: {},
-          };
-          return { ...item, blocks };
-        });
-        return { items: updated, busy: true };
-      }
-      return { items: next, busy: true };
-    }
-
-    case "message_end": {
-      const message = event.message;
-      if (message.role !== "assistant") return { items: next, busy: true };
-      const updated = patchLast(next, isStreamingAssistant, (item) => {
-        if (item.kind !== "assistant") return item;
-        return {
-          ...item,
-          blocks: message.content.filter(
-            (block) =>
-              (block.type === "text" && block.text.trim()) ||
-              (block.type === "thinking" && block.thinking.trim()) ||
-              block.type === "toolCall",
-          ) as AssistantBlock[],
-          streaming: false,
-          usage: message.usage,
-          stopReason: message.stopReason,
-          errorMessage: message.errorMessage,
-        };
-      });
-      return { items: updated, busy };
-    }
-
-    case "tool_execution_start": {
-      next.push({
-        kind: "tool",
-        id: nextId(),
-        toolCallId: event.toolCallId,
-        name: event.toolName,
-        args: (event.args ?? {}) as Record<string, unknown>,
-        state: "running",
-        isError: false,
-      });
-      return { items: next, busy: true };
-    }
-
-    case "tool_execution_update": {
-      const updated = patchFirst(next, isToolWithId(event.toolCallId), (item) => {
-        if (item.kind !== "tool") return item;
-        return { ...item, partial: toolResultText(event.partialResult) || item.partial };
-      });
-      return { items: updated, busy: true };
-    }
-
-    case "tool_execution_end": {
-      const updated = patchFirst(next, isToolWithId(event.toolCallId), (item) => {
-        if (item.kind !== "tool") return item;
-        return {
-          ...item,
-          state: event.isError ? "error" : "ok",
-          isError: event.isError,
-          resultText: toolResultText(event.result) || item.partial,
-          durationMs: event.durationMs,
-        };
-      });
-      return { items: updated, busy: true };
-    }
-
-    case "compaction_start":
-      next.push({
-        kind: "info",
-        id: nextId(),
-        text: `压缩上下文中（${event.reason}）…`,
-        tone: "info",
-      });
-      return { items: next, busy: true };
-
-    case "compaction_end": {
-      const result = event.result as { summary?: string; tokensBefore?: number } | null | undefined;
-      next.push({
-        kind: "compaction",
-        id: nextId(),
-        summary: result?.summary ?? "",
-        tokensBefore: result?.tokensBefore,
-        reason: event.reason,
-      });
-      return { items: next, busy: event.willRetry };
-    }
-
-    case "auto_retry_start":
-      next.push({
-        kind: "info",
-        id: nextId(),
-        text: `请求失败，${Math.round(event.delayMs / 1000)}s 后重试（${event.attempt}/${event.maxAttempts}）：${event.errorMessage}`,
-        tone: "warn",
-      });
-      return { items: next, busy: true };
-
-    case "auto_retry_end":
-      next.push({
-        kind: "info",
-        id: nextId(),
-        text: event.success
-          ? `重试成功（第 ${event.attempt} 次）`
-          : `重试失败：${event.finalError ?? "unknown"}`,
-        tone: event.success ? "info" : "error",
-      });
-      return { items: next, busy: true };
-
-    case "thinking_level_changed":
-      next.push({ kind: "info", id: nextId(), text: `思考档位：${event.level}`, tone: "info" });
-      return { items: next, busy };
-
-    case "extension_error":
-      next.push({ kind: "info", id: nextId(), text: `扩展错误：${event.error}`, tone: "error" });
-      return { items: next, busy: true };
-
-    default:
-      // Unknown or purely informational events are ignored.
-      return { items: next, busy };
-  }
-}
-
 export interface ProjectSummary {
   cwd: string;
   sessions: SessionFileInfo[];
@@ -447,20 +96,30 @@ export interface UseSessionsResult {
   activeId: string | null;
   active: SessionRuntime | null;
   projects: ProjectSummary[];
-  install: { found: boolean; version?: string; error?: string; source?: string } | null;
+  install: {
+    found: boolean;
+    version?: string;
+    error?: string;
+    source?: string;
+  } | null;
   loading: boolean;
   error: string | null;
   setActiveId: (id: string | null) => void;
   openProject: (projectDir: string, sessionPath?: string) => Promise<void>;
   closeSession: (id: string) => Promise<void>;
-  send: (text: string) => Promise<void>;
-  steer: (text: string) => Promise<void>;
+  send: (text: string, images?: ImageContent[]) => Promise<void>;
+  steer: (text: string, images?: ImageContent[]) => Promise<void>;
+  setDraft: (id: string, draft: Draft) => void;
   abort: () => Promise<void>;
   answerUi: (
     requestId: string,
     reply: { kind: "value" | "confirmed" | "cancelled"; value?: string },
   ) => Promise<void>;
-  configureModel: (provider: string, modelId: string, thinkingLevel: string) => Promise<void>;
+  configureModel: (
+    provider: string,
+    modelId: string,
+    thinkingLevel: string,
+  ) => Promise<void>;
   compact: () => Promise<void>;
   rename: (name: string) => Promise<void>;
   refreshState: () => Promise<void>;
@@ -476,6 +135,40 @@ export interface UseSessionsResult {
   settingsPath: string | null;
   /** How the installed pi compares to the tested version. */
   compatibility: PiCompatibility | null;
+}
+
+export function emptyRuntime(info: SessionInfo): SessionRuntime {
+  return {
+    info,
+    transcript: [],
+    state: null,
+    stats: null,
+    draft: { text: "", images: [] },
+    uiRequests: [],
+    busy: false,
+    toasts: [],
+    tree: null,
+    commands: null,
+  };
+}
+export function applySnapshot(
+  snapshot: SessionSnapshot,
+  previous?: SessionRuntime,
+): SessionRuntime {
+  if (previous && previous.info.generation > snapshot.info.generation)
+    return previous;
+  const same = previous?.info.generation === snapshot.info.generation;
+  return {
+    ...emptyRuntime(snapshot.info),
+    ...previous,
+    info: snapshot.info,
+    transcript: fromHistory(snapshot.messages),
+    state: snapshot.state,
+    stats: normalizeStats(snapshot.stats),
+    busy: !!(snapshot.state.isStreaming || snapshot.state.isCompacting),
+    tree: null,
+    uiRequests: same ? previous.uiRequests : [],
+  };
 }
 
 /**
@@ -496,20 +189,101 @@ export function useSessions(): UseSessionsResult {
   sessionsRef.current = sessions;
 
   const patch = useCallback(
-    (sessionId: string, change: (runtime: SessionRuntime) => SessionRuntime) => {
+    (
+      sessionId: string,
+      change: (runtime: SessionRuntime) => SessionRuntime,
+    ) => {
       setSessions((current) =>
-        current.map((runtime) => (runtime.info.id === sessionId ? change(runtime) : runtime)),
+        current.map((runtime) =>
+          runtime.info.id === sessionId ? change(runtime) : runtime,
+        ),
       );
     },
     [],
   );
+
+  const adopt = useCallback((snapshot: SessionSnapshot, focus = false) => {
+    setSessions((current) => {
+      const existing = current.find(
+        (runtime) => runtime.info.id === snapshot.info.id,
+      );
+      const opened = applySnapshot(snapshot, existing);
+      return existing
+        ? current.map((runtime) =>
+            runtime.info.id === snapshot.info.id ? opened : runtime,
+          )
+        : [...current, opened];
+    });
+    if (focus) setActiveId(snapshot.info.id);
+    setSettings((current) => {
+      if (!current) return current;
+      const oldPath = sessionsRef.current.find(
+        (runtime) => runtime.info.id === snapshot.info.id,
+      )?.info.sessionPath;
+      const paths = current.openSessions.filter(
+        (path) => path !== oldPath && path !== snapshot.info.sessionPath,
+      );
+      if (snapshot.info.sessionPath) paths.push(snapshot.info.sessionPath);
+      return {
+        ...current,
+        lastProject: snapshot.info.projectDir,
+        openSessions: paths,
+      };
+    });
+  }, []);
+
+  useEffect(
+    () =>
+      onSessionOpened((info) => {
+        setSessions((current) => {
+          const existing = current.find(
+            (runtime) => runtime.info.id === info.id,
+          );
+          if (existing && existing.info.generation >= info.generation)
+            return current;
+          const opened = {
+            ...emptyRuntime(info),
+            draft: existing?.draft ?? { text: "", images: [] },
+          };
+          return existing
+            ? current.map((runtime) =>
+                runtime.info.id === info.id ? opened : runtime,
+              )
+            : [...current, opened];
+        });
+        setActiveId((current) => current ?? info.id);
+      }),
+    [],
+  );
+  useEffect(() => onSessionSnapshot((snapshot) => adopt(snapshot)), [adopt]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setSessions((current) => {
+        let changed = false;
+        const next = current.map((runtime) => {
+          const requests = runtime.uiRequests.filter(
+            (request) => !request.expiresAt || request.expiresAt > Date.now(),
+          );
+          if (requests.length === runtime.uiRequests.length) return runtime;
+          changed = true;
+          return { ...runtime, uiRequests: requests };
+        });
+        return changed ? next : current;
+      });
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Boot: discover pi and list known projects.
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const [found, groups] = await Promise.all([api.discoverPi(), api.listProjects()]);
+        const [found, groups] = await Promise.all([
+          api.discoverPi(),
+          api.listProjects(),
+        ]);
         if (!alive) return;
         setInstall(found);
         setProjects(
@@ -534,7 +308,11 @@ export function useSessions(): UseSessionsResult {
     const unlisten = onPiEvents((batch: PiBatch) => {
       setSessions((current) =>
         current.map((runtime) => {
-          if (runtime.info.id !== batch.sessionId) return runtime;
+          if (
+            runtime.info.id !== batch.sessionId ||
+            runtime.info.generation !== batch.generation
+          )
+            return runtime;
           let items = runtime.transcript;
           let busy = runtime.busy;
           let uiRequests = runtime.uiRequests;
@@ -545,10 +323,39 @@ export function useSessions(): UseSessionsResult {
             const result = applyEvent(items, envelope, busy);
             items = result.items;
             busy = result.busy;
-            if (envelope.kind === "ui") uiRequests = [...uiRequests, envelope.event];
+            if (envelope.kind === "ui") {
+              const request = envelope.event;
+              if (
+                ["select", "confirm", "input", "editor"].includes(
+                  request.method,
+                )
+              ) {
+                uiRequests = [
+                  ...uiRequests.filter((r) => r.id !== request.id),
+                  {
+                    ...request,
+                    expiresAt:
+                      request.timeout != null
+                        ? Date.now() + request.timeout
+                        : undefined,
+                  },
+                ];
+              } else if (request.method === "notify") {
+                items = [
+                  ...items,
+                  {
+                    kind: "info",
+                    id: nextId(),
+                    text: request.message ?? request.title ?? "通知",
+                    tone: "info",
+                  },
+                ];
+              }
+            }
             if (envelope.kind !== "pi") continue;
             const event = envelope.event;
-            if (event.type === "session_info_changed" && event.name) label = event.name;
+            if (event.type === "session_info_changed" && event.name)
+              label = event.name;
             if (event.type === "thinking_level_changed") thinking = event.level;
           }
 
@@ -556,33 +363,58 @@ export function useSessions(): UseSessionsResult {
             ...runtime,
             transcript: items,
             busy,
-            uiRequests,
-            info: { ...runtime.info, label },
-            state: runtime.state ? { ...runtime.state, thinkingLevel: thinking } : runtime.state,
+            uiRequests: batch.events.some((e) => e.kind === "exited")
+              ? []
+              : uiRequests,
+            info: {
+              ...runtime.info,
+              label,
+              closed:
+                runtime.info.closed ||
+                batch.events.some((e) => e.kind === "exited"),
+            },
+            state: runtime.state
+              ? { ...runtime.state, thinkingLevel: thinking }
+              : runtime.state,
           };
         }),
       );
-      if (batch.events.some((envelope) =>
-        envelope.kind === "pi" && envelope.event.type === "agent_settled",
-      )) {
+      if (
+        sessionsRef.current.some(
+          (runtime) =>
+            runtime.info.id === batch.sessionId &&
+            runtime.info.generation === batch.generation,
+        ) &&
+        batch.events.some(
+          (envelope) =>
+            envelope.kind === "pi" && envelope.event.type === "agent_settled",
+        )
+      ) {
         void Promise.all([
           api.getState(batch.sessionId),
           api.getSessionStats(batch.sessionId),
           api.listProjects(),
         ])
           .then(([state, stats, groups]) => {
-            patch(batch.sessionId, (runtime) => ({
-              ...runtime,
-              state,
-              stats: normalizeStats(stats),
-              info: {
-                ...runtime.info,
-                sessionPath: state.sessionFile ?? runtime.info.sessionPath,
-              },
-            }));
+            patch(batch.sessionId, (runtime) =>
+              runtime.info.generation !== batch.generation
+                ? runtime
+                : {
+                    ...runtime,
+                    state,
+                    stats: normalizeStats(stats),
+                    info: {
+                      ...runtime.info,
+                      sessionPath:
+                        state.sessionFile ?? runtime.info.sessionPath,
+                    },
+                  },
+            );
             setProjects(groups);
           })
-          .catch((cause) => console.error("Unable to refresh settled session", cause));
+          .catch((cause) =>
+            console.error("Unable to refresh settled session", cause),
+          );
       }
     });
 
@@ -591,11 +423,15 @@ export function useSessions(): UseSessionsResult {
 
   // Toast channel.
   useEffect(() => {
-    const unlisten = onToasts((message) => {
+    const unlisten = onToasts((sessionId, message) => {
       toastSeq.current += 1;
       const id = toastSeq.current;
       setSessions((current) =>
-        current.map((runtime) => ({ ...runtime, toasts: [...runtime.toasts, { id, message }] })),
+        current.map((runtime) =>
+          runtime.info.id !== sessionId
+            ? runtime
+            : { ...runtime, toasts: [...runtime.toasts, { id, message }] },
+        ),
       );
       window.setTimeout(() => {
         setSessions((current) =>
@@ -613,134 +449,90 @@ export function useSessions(): UseSessionsResult {
     async (projectDir: string, sessionPath?: string) => {
       setError(null);
       try {
-        const id = await api.openSession(projectDir, sessionPath);
-        const [info, state] = await Promise.all([
-          api.listSessions(),
-          api.getState(id),
-        ]);
-        const found = info.find((entry) => entry.id === id);
-        let transcript: TranscriptItem[] = [];
-        if (sessionPath) {
-          const history = await api.getMessages(id);
-          transcript = fromHistory(history.messages ?? []);
-        }
-        const opened: SessionRuntime = {
-          info: found ?? {
-            id,
-            label:
-              sessionPath?.split(/[\\/]/).pop() ??
-              projectDir.split(/[\\/]/).pop() ??
-              id,
-            projectDir,
-            sessionPath,
-            pid: 0,
-            launchSource: "",
-            closed: false,
-          },
-          transcript,
-          state,
-          stats: null,
-          uiRequests: [],
-          busy: false,
-          toasts: [],
-          tree: null,
-          commands: null,
-        };
-        setSessions((current) => [...current, opened]);
-        setActiveId(id);
-        void api.getSessionStats(id).then((stats) => {
-          patch(id, (runtime) => ({ ...runtime, stats: normalizeStats(stats) }));
-        });
-
-        // Remember what is open so the next launch can restore it.
-        const opened_path = opened.info.sessionPath;
-        setSettings((current) => {
-          if (!current) return current;
-          const paths = current.openSessions.filter((path) => path !== opened_path);
-          if (opened_path) paths.push(opened_path);
-          const next = { ...current, lastProject: projectDir, openSessions: paths };
-          return next;
-        });
+        adopt(await api.openSession(projectDir, sessionPath), true);
       } catch (cause) {
         setError(String(cause));
+        const live = await api.listSessions().catch(() => null);
+        if (live)
+          setSessions((current) =>
+            current.filter((runtime) =>
+              live.some((info) => info.id === runtime.info.id),
+            ),
+          );
       }
     },
+    [adopt],
+  );
+
+  const closeSession = useCallback(async (id: string) => {
+    const closing = sessionsRef.current.find(
+      (runtime) => runtime.info.id === id,
+    );
+    try {
+      await api.closeSession(id);
+    } catch (cause) {
+      setError(String(cause));
+      return;
+    }
+    setSessions((current) =>
+      current.filter((runtime) => runtime.info.id !== id),
+    );
+    setActiveId((current) => (current === id ? null : current));
+
+    // Drop it from the saved list so the next launch does not reopen it.
+    const closedPath = closing?.info.sessionPath;
+    if (closedPath) {
+      setSettings((current) => {
+        if (!current) return current;
+        const next = {
+          ...current,
+          openSessions: current.openSessions.filter(
+            (path) => path !== closedPath,
+          ),
+        };
+        return next;
+      });
+    }
+  }, []);
+
+  const setDraft = useCallback(
+    (id: string, draft: Draft) =>
+      patch(id, (runtime) => ({ ...runtime, draft })),
     [patch],
   );
 
-  const closeSession = useCallback(
-    async (id: string) => {
-      const closing = sessionsRef.current.find((runtime) => runtime.info.id === id);
-      try {
-        await api.closeSession(id);
-      } catch {
-        // A session whose pi already died is still closed from our side.
-      }
-      setSessions((current) => current.filter((runtime) => runtime.info.id !== id));
-      setActiveId((current) => (current === id ? null : current));
-
-      // Drop it from the saved list so the next launch does not reopen it.
-      const closedPath = closing?.info.sessionPath;
-      if (closedPath) {
-        setSettings((current) => {
-          if (!current) return current;
-          const next = {
-            ...current,
-            openSessions: current.openSessions.filter((path) => path !== closedPath),
-          };
-          return next;
-        });
-      }
-    },
-    [],
-  );
-
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, images: ImageContent[] = []) => {
       const id = activeId;
-      if (!id || !text.trim()) return;
-      setSessions((current) =>
-        current.map((runtime) =>
-          runtime.info.id === id
-            ? {
-                ...runtime,
-                transcript: [
-                  ...runtime.transcript,
-                  { kind: "user", id: nextId(), text, images: 0 },
-                ],
-                busy: true,
-              }
-            : runtime,
-        ),
-      );
+      if (!id || (!text.trim() && images.length === 0)) return;
+      const itemId = nextId();
+      patch(id, (runtime) => ({
+        ...runtime,
+        busy: true,
+        transcript: [
+          ...runtime.transcript,
+          { kind: "user", id: itemId, text, images: images.length },
+        ],
+      }));
       try {
-        await api.sendPrompt(id, text);
+        await api.sendPrompt(id, text, images);
       } catch (cause) {
         setError(String(cause));
-        patch(id, (runtime) => ({ ...runtime, busy: false }));
+        patch(id, (runtime) => ({
+          ...runtime,
+          busy: false,
+          transcript: runtime.transcript.filter((item) => item.id !== itemId),
+        }));
+        throw cause;
       }
     },
     [activeId, patch],
   );
 
   const steer = useCallback(
-    async (text: string) => {
-      const id = activeId;
-      if (!id || !text.trim()) return;
-      setSessions((current) =>
-        current.map((runtime) =>
-          runtime.info.id === id
-            ? {
-                ...runtime,
-                transcript: [
-                  ...runtime.transcript,
-                  { kind: "info", id: nextId(), text: `追加指令：${text}`, tone: "info" },
-                ],
-              }
-            : runtime,
-        ),
-      );
-      await api.steer(id, text);
+    async (text: string, images: ImageContent[] = []) => {
+      if (!activeId || (!text.trim() && images.length === 0)) return;
+      await api.steer(activeId, text, images);
     },
     [activeId],
   );
@@ -748,7 +540,11 @@ export function useSessions(): UseSessionsResult {
   const abort = useCallback(async () => {
     const id = activeId;
     if (!id) return;
-    await api.abort(id);
+    try {
+      await api.abort(id);
+    } catch (cause) {
+      setError(String(cause));
+    }
   }, [activeId]);
 
   const answerUi = useCallback(
@@ -767,7 +563,9 @@ export function useSessions(): UseSessionsResult {
       await api.answerUi(id, payload);
       patch(id, (runtime) => ({
         ...runtime,
-        uiRequests: runtime.uiRequests.filter((request) => request.id !== requestId),
+        uiRequests: runtime.uiRequests.filter(
+          (request) => request.id !== requestId,
+        ),
       }));
     },
     [activeId, patch],
@@ -778,7 +576,12 @@ export function useSessions(): UseSessionsResult {
       const id = activeId;
       if (!id) return;
       try {
-        const state = await api.configureModel(id, provider, modelId, thinkingLevel);
+        const state = await api.configureModel(
+          id,
+          provider,
+          modelId,
+          thinkingLevel,
+        );
         patch(id, (runtime) => ({ ...runtime, state }));
       } catch (cause) {
         // A failed rollback must still show Pi's actual state in the toolbar.
@@ -797,7 +600,11 @@ export function useSessions(): UseSessionsResult {
   const compact = useCallback(async () => {
     const id = activeId;
     if (!id) return;
-    await api.compact(id);
+    try {
+      await api.compact(id);
+    } catch (cause) {
+      setError(String(cause));
+    }
   }, [activeId]);
 
   const rename = useCallback(
@@ -805,7 +612,10 @@ export function useSessions(): UseSessionsResult {
       const id = activeId;
       if (!id || !name.trim()) return;
       await api.setSessionName(id, name.trim());
-      patch(id, (runtime) => ({ ...runtime, info: { ...runtime.info, label: name.trim() } }));
+      patch(id, (runtime) => ({
+        ...runtime,
+        info: { ...runtime.info, label: name.trim() },
+      }));
     },
     [activeId, patch],
   );
@@ -813,8 +623,15 @@ export function useSessions(): UseSessionsResult {
   const refreshState = useCallback(async () => {
     const id = activeId;
     if (!id) return;
-    const [state, stats] = await Promise.all([api.getState(id), api.getSessionStats(id)]);
-    patch(id, (runtime) => ({ ...runtime, state, stats: normalizeStats(stats) }));
+    const [state, stats] = await Promise.all([
+      api.getState(id),
+      api.getSessionStats(id),
+    ]);
+    patch(id, (runtime) => ({
+      ...runtime,
+      state,
+      stats: normalizeStats(stats),
+    }));
   }, [activeId, patch]);
 
   const dismissToast = useCallback((toastId: number) => {
@@ -826,77 +643,92 @@ export function useSessions(): UseSessionsResult {
     );
   }, []);
 
-  const fork = useCallback(
-    async (entryId: string) => {
+  const branch = useCallback(
+    async (entryId?: string): Promise<string | null> => {
       const id = activeId;
       if (!id) return null;
-      await api.forkSession(id, entryId);
-      // pi opened a new session file; pick it up so the sidebar and the state
-      // reflect it, then open a second tab for it.
-      const state = await api.getState(id);
-      const path = state?.sessionFile;
-      if (!path) return null;
-      const info = (await api.listSessions()).find((entry) => entry.id === id);
-      if (info?.sessionPath && info.sessionPath !== path) {
-        await openProject(info.projectDir, path);
-        return path;
+      patch(id, (runtime) => ({ ...runtime, busy: true }));
+      try {
+        const result = entryId
+          ? await api.forkSession(id, entryId)
+          : await api.cloneSession(id);
+        adopt(result.original);
+        if (result.cancelled || !result.branch) return null;
+        adopt(result.branch, true);
+        if (result.selectedText)
+          patch(result.branch.info.id, (runtime) => ({
+            ...runtime,
+            draft: { ...runtime.draft, text: result.selectedText! },
+          }));
+        return result.branch.info.sessionPath ?? null;
+      } catch (cause) {
+        setError(String(cause));
+        try {
+          adopt(await api.getSessionSnapshot(id));
+        } catch {
+          const info = (await api.listSessions()).find(
+            (info) => info.id === id,
+          );
+          if (info) patch(id, (runtime) => ({ ...runtime, info, busy: false }));
+        }
+        return null;
+      } finally {
+        patch(id, (runtime) => ({ ...runtime, busy: false }));
       }
-      patch(id, (runtime) => ({ ...runtime, state }));
-      return path;
     },
-    [activeId, openProject, patch],
+    [activeId, adopt, patch],
   );
-
+  const fork = useCallback((entryId: string) => branch(entryId), [branch]);
   const clone = useCallback(async () => {
-    const id = activeId;
-    if (!id) return;
-    await api.cloneSession(id);
-    const state = await api.getState(id);
-    const info = (await api.listSessions()).find((entry) => entry.id === id);
-    if (info?.sessionPath && state?.sessionFile && info.sessionPath !== state.sessionFile) {
-      await openProject(info.projectDir, state.sessionFile);
-    } else {
-      patch(id, (runtime) => ({ ...runtime, state }));
-    }
-  }, [activeId, openProject, patch]);
+    await branch();
+  }, [branch]);
 
-  const deleteSession = useCallback(async (sessionPath: string) => {
-    await api.deleteSession(sessionPath);
-    // Drop any tab that was showing that file, and refresh the sidebar.
-    const doomed = sessionsRef.current.filter(
-      (runtime) => runtime.info.sessionPath === sessionPath,
-    );
-    for (const runtime of doomed) {
-      await closeSession(runtime.info.id);
-    }
-    setProjects(await api.listProjects().then((groups) =>
-      groups.map((group) => ({ cwd: group.cwd, sessions: group.sessions })),
-    ));
-  }, [closeSession]);
+  const deleteSession = useCallback(
+    async (sessionPath: string) => {
+      // Drop any tab that was showing that file, and refresh the sidebar.
+      const doomed = sessionsRef.current.filter(
+        (runtime) => runtime.info.sessionPath === sessionPath,
+      );
+      for (const runtime of doomed) {
+        await closeSession(runtime.info.id);
+      }
+      await api.deleteSession(sessionPath);
+      setProjects(
+        await api.listProjects().then((groups) =>
+          groups.map((group) => ({
+            cwd: group.cwd,
+            sessions: group.sessions,
+          })),
+        ),
+      );
+    },
+    [closeSession],
+  );
 
   const switchTo = useCallback(
     async (sessionPath: string) => {
-      const id = activeId;
-      if (!id) return;
-      await api.switchSession(id, sessionPath);
-      const [state, history] = await Promise.all([
-        api.getState(id),
-        api.getMessages(id),
-      ]);
-      patch(id, (runtime) => ({
-        ...runtime,
-        state,
-        transcript: fromHistory(history.messages ?? []),
-      }));
+      if (activeId) adopt(await api.switchSession(activeId, sessionPath), true);
     },
-    [activeId, patch],
+    [activeId, adopt],
   );
 
   const loadTree = useCallback(async () => {
     const id = activeId;
     if (!id) return;
-    const result = await api.getTree(id);
-    patch(id, (runtime) => ({ ...runtime, tree: result.tree ?? [] }));
+    const expected = sessionsRef.current.find(
+      (runtime) => runtime.info.id === id,
+    )?.info;
+    try {
+      const result = await api.getTree(id);
+      patch(id, (runtime) =>
+        runtime.info.generation !== expected?.generation ||
+        runtime.info.sessionPath !== expected.sessionPath
+          ? runtime
+          : { ...runtime, tree: result.tree ?? [] },
+      );
+    } catch (cause) {
+      setError(String(cause));
+    }
   }, [activeId, patch]);
 
   const loadCommands = useCallback(async () => {
@@ -915,7 +747,10 @@ export function useSessions(): UseSessionsResult {
     let alive = true;
     (async () => {
       try {
-        const [loaded, location] = await Promise.all([api.getSettings(), api.settingsLocation()]);
+        const [loaded, location] = await Promise.all([
+          api.getSettings(),
+          api.settingsLocation(),
+        ]);
         if (!alive) return;
         setSettings({ ...defaultSettings, ...loaded });
         setSettingsPath(location);
@@ -949,7 +784,8 @@ export function useSessions(): UseSessionsResult {
     const root = document.documentElement;
     root.dataset.theme = settings.theme;
     root.style.setProperty("--transcript-font-size", `${settings.fontSize}px`);
-    if (settings.fontFamily.trim()) root.style.setProperty("--sans", settings.fontFamily);
+    if (settings.fontFamily.trim())
+      root.style.setProperty("--sans", settings.fontFamily);
     else root.style.removeProperty("--sans");
   }, [settings]);
 
@@ -1009,6 +845,7 @@ export function useSessions(): UseSessionsResult {
     closeSession,
     send,
     steer,
+    setDraft,
     abort,
     answerUi,
     configureModel,
@@ -1048,26 +885,16 @@ const defaultSettings: Settings = {
  * exactly the `cwd` pi needs to resume it, so we look the file up in the
  * project groups rather than storing a second copy of that mapping.
  */
-export function projectDirFor(sessionPath: string, groups: ProjectSummary[]): string | null {
+export function projectDirFor(
+  sessionPath: string,
+  groups: ProjectSummary[],
+): string | null {
   for (const group of groups) {
     if (group.sessions.some((session) => session.path === sessionPath)) {
       return group.cwd;
     }
   }
   return null;
-}
-
-function normalizeStats(stats: {
-  tokens?: { totalTokens?: number };
-  contextUsage?: { tokens?: number | null; contextWindow?: number; percent?: number | null };
-  cost?: number;
-}): SessionRuntime["stats"] {
-  return {
-    tokens: stats.tokens?.totalTokens,
-    contextWindow: stats.contextUsage?.contextWindow,
-    percent: stats.contextUsage?.percent,
-    cost: stats.cost,
-  };
 }
 
 // Referenced so unused imports stay meaningful for readers of this module.

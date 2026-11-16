@@ -1,6 +1,11 @@
 import { useEffect, useRef } from "react";
 
-import { Markdown, ThinkingBlockView, ToolCard, summarizeArgs } from "./Markdown";
+import {
+  Markdown,
+  ThinkingBlockView,
+  ToolCard,
+  summarizeArgs,
+} from "./Markdown";
 import type { TranscriptItem } from "../lib/types";
 
 /** The scrolling conversation view for one session. */
@@ -21,7 +26,8 @@ export function Transcript({
     const element = scrollRef.current;
     if (!element) return;
     const onScroll = () => {
-      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      const distance =
+        element.scrollHeight - element.scrollTop - element.clientHeight;
       pinnedRef.current = distance < 80;
     };
     element.addEventListener("scroll", onScroll, { passive: true });
@@ -40,7 +46,9 @@ export function Transcript({
         <div className="empty-card">
           <h2>开始对话</h2>
           <p>选择左侧的项目或会话开始；也可以直接在下方输入。</p>
-          <p className="muted">提示：运行中按 Esc 或点「停止」中断；输入新消息会作为 steer 追加。</p>
+          <p className="muted">
+            提示：运行中按 Esc 或点「停止」中断；输入新消息会作为 steer 追加。
+          </p>
         </div>
       </div>
     );
@@ -76,6 +84,9 @@ function Row({
         <div className="row user">
           <div className="bubble user">
             <pre className="user-text">{item.text}</pre>
+            {item.images > 0 && (
+              <div className="row-meta">图片附件 × {item.images}</div>
+            )}
           </div>
         </div>
       );
@@ -92,14 +103,20 @@ function Row({
               ) : (
                 <div key={index} className="tool-badge">
                   <span className="tool-badge-name">{block.name}</span>
-                  <span className="tool-badge-args">{summarizeArgs(block.arguments)}</span>
+                  <span className="tool-badge-args">
+                    {summarizeArgs(block.arguments)}
+                  </span>
                 </div>
               ),
             )}
-            {item.errorMessage && <div className="row-error">{item.errorMessage}</div>}
-            {item.stopReason && item.stopReason !== "stop" && item.stopReason !== "toolUse" && (
-              <div className="row-meta">stopReason: {item.stopReason}</div>
+            {item.errorMessage && (
+              <div className="row-error">{item.errorMessage}</div>
             )}
+            {item.stopReason &&
+              item.stopReason !== "stop" &&
+              item.stopReason !== "toolUse" && (
+                <div className="row-meta">stopReason: {item.stopReason}</div>
+              )}
           </div>
         </div>
       );
@@ -127,15 +144,22 @@ function Row({
         <div className="row info">
           <div className="compaction-card">
             <div className="compaction-title">
-              已压缩上下文{item.tokensBefore ? `（压缩前 ${formatTokens(item.tokensBefore)} tokens）` : ""}
+              已压缩上下文
+              {item.tokensBefore
+                ? `（压缩前 ${formatTokens(item.tokensBefore)} tokens）`
+                : ""}
             </div>
-            {item.summary && <div className="compaction-summary">{item.summary}</div>}
+            {item.summary && (
+              <div className="compaction-summary">{item.summary}</div>
+            )}
           </div>
         </div>
       );
     default:
       return (
-        <div className={`row info ${item.kind === "info" ? `tone-${item.tone}` : ""}`}>
+        <div
+          className={`row info ${item.kind === "info" ? `tone-${item.tone}` : ""}`}
+        >
           <div className="info-card">{item.text}</div>
         </div>
       );
