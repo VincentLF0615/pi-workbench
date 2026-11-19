@@ -304,17 +304,70 @@ pub async fn follow_up(
     outcome
 }
 
+/// The text recovered by `clear_queue`, plus any later abort failure.
+///
+/// Clearing and aborting intentionally stay on the unlocked control path: a
+/// long compaction holds the mutation lock and must remain interruptible.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopOutcome {
+    pub steering: Vec<String>,
+    pub follow_up: Vec<String>,
+    pub abort_error: Option<String>,
+}
+
+/// Recover queued text before stopping so queued work cannot run after abort.
+pub fn stop_with_queue(client: &pi_rpc::PiClient) -> pi_rpc::Result<StopOutcome> {
+    let cleared = client
+        .clear_queue()
+        .map_err(|error| pi_rpc::Error::Protocol(format!("无法取回排队消息，尚未停止：{error}")))?;
+    let text = |key: &str| {
+        cleared
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let outcome = StopOutcome {
+        steering: text("steering"),
+        follow_up: text("followUp"),
+        abort_error: client
+            .abort()
+            .err()
+            .map(|error| format!("排队文字已取回，但停止失败：{error}")),
+    };
+    Ok(outcome)
+}
+
 #[tauri::command]
 pub async fn abort(
     app: tauri::AppHandle,
     state: State<'_, Arc<SessionState>>,
     session_id: String,
 ) -> Result<Value, String> {
-    let outcome = run(Arc::clone(state.inner()), session_id.clone(), |client| {
-        client.abort()
-    })
+    let outcome = run(
+        Arc::clone(state.inner()),
+        session_id.clone(),
+        stop_with_queue,
+    )
     .await;
-    record(&app, &state, &session_id, &outcome);
+    let abort_error = outcome
+        .as_ref()
+        .ok()
+        .and_then(|value| value.get("abortError"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(error) = abort_error {
+        record(&app, &state, &session_id, &Err(error));
+    } else {
+        record(&app, &state, &session_id, &outcome);
+    }
     outcome
 }
 

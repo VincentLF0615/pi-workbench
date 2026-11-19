@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { useDialogFocus } from "../lib/useDialogFocus";
 import type { PiModel } from "../lib/types";
 
 const levelOrder = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -36,6 +37,13 @@ export function ModelPicker({ sessionId, model, thinkingLevel, busy, onApply }: 
   const dialog = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const request = useRef(0);
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose: () => setOpen(false),
+    dialogRef: dialog,
+    initialFocusRef: search,
+    pending,
+  });
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -80,12 +88,6 @@ export function ModelPicker({ sessionId, model, thinkingLevel, busy, onApply }: 
     return () => window.removeEventListener("keydown", key);
   }, [show]);
 
-  useEffect(() => {
-    if (!open) return;
-    search.current?.focus();
-    return () => trigger.current?.focus();
-  }, [open]);
-
   const providers = useMemo(() => [...new Set(models.map(entry => entry.provider))].sort(), [models]);
   const filtered = useMemo(() => {
     const words = query.toLowerCase().trim().split(/\s+/);
@@ -129,23 +131,12 @@ export function ModelPicker({ sessionId, model, thinkingLevel, busy, onApply }: 
       <span className="model-name">{model?.name || model?.id || "打开会话后选择"}</span>
     </button>
     {open && <div className="modal-backdrop model-backdrop" onMouseDown={event => {
-      if (event.target === event.currentTarget && !pending) setOpen(false);
+      if (event.target === event.currentTarget) requestClose();
     }}>
       <div ref={dialog} className="model-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}
-        onKeyDown={event => {
-          if (event.key === "Escape") {
-            event.stopPropagation();
-            if (!pending) setOpen(false);
-          }
-          if (event.key === "Tab") {
-            const focusable = [...dialog.current!.querySelectorAll<HTMLElement>('button:not(:disabled), input, select')];
-            const first = focusable[0]; const last = focusable[focusable.length - 1];
-            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-          }
-        }}>
+        tabIndex={-1} onKeyDown={onKeyDown}>
         <div className="model-dialog-heading"><div><h2 id={titleId}>选择模型</h2><p>选好模型和思考强度后，点击确定应用到当前会话</p></div>
-          <button type="button" className="model-dismiss" aria-label="关闭模型选择" disabled={pending} onClick={() => setOpen(false)}>×</button>
+          <button type="button" className="model-dismiss" aria-label="关闭模型选择" disabled={pending} onClick={requestClose}>×</button>
         </div>
         <div className="model-search-row">
           <input ref={search} className="input model-search" placeholder="搜索模型名称、ID 或服务商…" value={query}
@@ -194,7 +185,7 @@ export function ModelPicker({ sessionId, model, thinkingLevel, busy, onApply }: 
         <div className="model-dialog-footer model-confirm-footer">
           <span>{pending ? "正在应用…" : selectedModel ? `${selectedModel.name || selectedModel.id} · ${draftThinking}` : "请选择模型"}</span>
           <div className="model-confirm-actions">
-            <button type="button" className="btn secondary model-cancel" disabled={pending} onClick={() => setOpen(false)}>取消</button>
+            <button type="button" className="btn secondary model-cancel" disabled={pending} onClick={requestClose}>取消</button>
             <button type="button" className="btn primary model-confirm" disabled={pending || busy || loading || !selectedModel || !availableLevels.includes(draftThinking)}
               onClick={() => void confirm()}>{pending ? "应用中…" : "确定"}</button>
           </div>

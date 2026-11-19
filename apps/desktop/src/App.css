@@ -6,8 +6,10 @@
   --border: #e6e7eb;
   --text: #24262b;
   --text-dim: #747780;
-  --accent: #292c32;
-  --accent-dim: #15171c;
+  --brand: #4d9abf;
+  --brand-strong: #2f6f8c;
+  --accent: var(--brand-strong);
+  --accent-dim: #24566d;
   --ok: #288456;
   --warn: #956316;
   --error: #c34545;

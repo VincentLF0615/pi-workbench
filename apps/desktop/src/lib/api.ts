@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
+  AbortResult,
   BranchResult,
   ImageContent,
   SessionSnapshot,
@@ -52,6 +54,7 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 
 export const api = {
   minimizeToTray: () => call<void>("minimize_to_tray"),
+  setWindowTitle: (title: string) => getCurrentWindow().setTitle(title),
   discoverPi: () => call<PiInstall>("discover_pi"),
 
   listProjects: () => call<ProjectGroupInfo[]>("list_projects"),
@@ -88,7 +91,7 @@ export const api = {
     call<{ disposition?: string }>("steer", { sessionId, text, images }),
   followUp: (sessionId: string, text: string, images: ImageContent[] = []) =>
     call<{ disposition?: string }>("follow_up", { sessionId, text, images }),
-  abort: (sessionId: string) => call<void>("abort", { sessionId }),
+  abort: (sessionId: string) => call<AbortResult>("abort", { sessionId }),
 
   setModel: (sessionId: string, provider: string, modelId: string) =>
     call<void>("set_model", { sessionId, provider, modelId }),

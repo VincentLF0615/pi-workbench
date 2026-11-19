@@ -16,12 +16,14 @@ export function Dock({
   tab,
   onTab,
   onReveal,
+  widgets,
 }: {
   projectDir: string | null;
   sessionId: string | null;
   tab: DockTab;
   onTab: (tab: DockTab) => void;
   onReveal: (path: string) => void;
+  widgets: Record<string, string[]>;
 }) {
   const [git, setGit] = useState<GitStatus | null>(null);
   const [files, setFiles] = useState<FileNode[] | null>(null);
@@ -104,7 +106,31 @@ export function Dock({
         {tab === "preview" && <PreviewPane />}
         {tab === "logs" && <LogPane lines={logs} />}
       </div>
+      <ExtensionWidgets widgets={widgets} />
     </aside>
+  );
+}
+
+export function ExtensionWidgets({
+  widgets,
+}: {
+  widgets: Record<string, string[]>;
+}) {
+  const entries = Object.entries(widgets).filter(([, lines]) => lines.length > 0);
+  if (entries.length === 0) return null;
+  return (
+    <section className="extension-widgets" aria-label="扩展组件">
+      <div className="extension-widgets-title">扩展</div>
+      {entries.map(([key, lines]) => (
+        <div className="extension-widget" key={key} title={`扩展：${key}`}>
+          {lines.map((line, index) => (
+            <div className="extension-widget-line" key={`${index}:${line}`}>
+              {line}
+            </div>
+          ))}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -125,7 +151,7 @@ function DockButton({
 }) {
   return (
     <div className={`dock-tab ${active ? "active" : ""}`}>
-      <button type="button" onClick={onClick} title={title}>
+      <button type="button" onClick={onClick} title={title} aria-pressed={active}>
         {children}
         {badge != null && badge > 0 && <span className="dock-badge">{badge}</span>}
       </button>

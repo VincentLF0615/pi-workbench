@@ -1,6 +1,6 @@
 [package]
 name = "pi-workbench"
-version = "0.1.1"
+version = "0.1.0"
 description = "Desktop workbench for the pi coding agent"
 authors = ["LuoFeng"]
 edition = "2024"
@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 # Desktop only: keeps one app process and focuses the existing window when a
 # second launch is attempted.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

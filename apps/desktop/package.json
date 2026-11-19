@@ -1,7 +1,7 @@
 {
   "name": "pi-workbench-desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,11 @@
     "tauri": "tauri",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "format:check": "prettier --check src/App.tsx src/components/Composer.tsx src/components/Transcript.tsx src/lib/api.ts src/lib/store.ts src/lib/types.ts src/lib/transcript.ts src/lib/stats.ts src/lib/images.ts src/reliability.test.tsx vitest.config.ts"
+    "format:check": "prettier --check src/App.tsx src/components/Composer.tsx src/components/Panels.tsx src/components/Sidebar.tsx src/components/Transcript.tsx src/lib/api.ts src/lib/store.ts src/lib/types.ts src/lib/transcript.ts src/lib/stats.ts src/lib/images.ts src/lib/clipboard.ts src/lib/external.ts src/lib/useDialogFocus.ts src/reliability.test.tsx vitest.config.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

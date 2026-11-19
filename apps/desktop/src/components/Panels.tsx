@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import piMark from "../assets/pi-mark.svg";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import piMark from "../assets/pi-mark.png";
+import { useDialogFocus } from "../lib/useDialogFocus";
 
 import type { SessionEntry, SlashCommand } from "../lib/types";
 
@@ -22,22 +23,62 @@ export function Menu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (!anchor) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const timer = window.setTimeout(() => {
+      ref.current
+        ?.querySelector<HTMLButtonElement>(".menu-item:not(:disabled)")
+        ?.focus();
+    }, 0);
     const onDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) onClose();
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        closeRef.current();
+      }
+    };
+    const moveFocus = (key: string) => {
+      const buttons = Array.from(
+        ref.current?.querySelectorAll<HTMLButtonElement>(
+          ".menu-item:not(:disabled)",
+        ) ?? [],
+      );
+      if (buttons.length === 0) return;
+      const current = buttons.indexOf(
+        document.activeElement as HTMLButtonElement,
+      );
+      const next =
+        key === "Home"
+          ? 0
+          : key === "End"
+            ? buttons.length - 1
+            : key === "ArrowUp"
+              ? (current <= 0 ? buttons.length : current) - 1
+              : (current + 1) % buttons.length;
+      buttons[next].focus();
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRef.current();
+      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        moveFocus(event.key);
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
+      window.clearTimeout(timer);
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      if (previous?.isConnected) previous.focus();
     };
-  }, [anchor, onClose]);
+  }, [anchor]);
 
   if (!anchor) return null;
 
@@ -107,14 +148,18 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose,
+    dialogRef,
+    initialFocusRef: inputRef,
+  });
 
   useEffect(() => {
     if (open) {
       setQuery("");
       setIndex(0);
-      // Focus after the node exists.
-      const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
-      return () => window.clearTimeout(timer);
     }
   }, [open]);
 
@@ -143,8 +188,21 @@ export function CommandPalette({
   };
 
   return (
-    <div className="palette-backdrop" onMouseDown={onClose}>
-      <div className="palette" onMouseDown={(event) => event.stopPropagation()}>
+    <div
+      className="palette-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pi 命令面板"
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
         <input
           ref={inputRef}
           className="palette-input"
@@ -161,9 +219,6 @@ export function CommandPalette({
             } else if (event.key === "Enter") {
               event.preventDefault();
               submit();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
             }
           }}
         />
@@ -228,14 +283,38 @@ export function ForkDialog({
   onPick: (entryId: string) => void;
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose,
+    dialogRef,
+  });
   if (!open) return null;
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-title">从哪条消息分叉？</div>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
+        <div className="modal-title" id={titleId}>
+          从哪条消息分叉？
+        </div>
         <div className="modal-body">
           {messages === null && <div className="muted">正在读取…</div>}
-          {messages?.length === 0 && <div className="muted">这个会话还没有可分叉的消息</div>}
+          {messages?.length === 0 && (
+            <div className="muted">这个会话还没有可分叉的消息</div>
+          )}
           {messages?.map((message) => (
             <button
               key={message.entryId}
@@ -243,21 +322,27 @@ export function ForkDialog({
               className="fork-item"
               onClick={() => {
                 onPick(message.entryId);
-                onClose();
+                requestClose();
               }}
             >
-              {message.text.length > 120 ? `${message.text.slice(0, 120)}…` : message.text}
+              {message.text.length > 120
+                ? `${message.text.slice(0, 120)}…`
+                : message.text}
             </button>
           ))}
         </div>
         <div className="modal-actions">
-          <button type="button" className="btn ghost" onClick={onClose}>
+          <button type="button" className="btn ghost" onClick={requestClose}>
             取消
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+function themeLabel(theme: string) {
+  return theme === "system" ? "跟随系统" : theme === "light" ? "亮色" : "暗色";
 }
 
 /** Settings modal. */
@@ -282,11 +367,33 @@ export function SettingsDialog({
   onChange: (patch: Record<string, unknown>) => void;
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose,
+    dialogRef,
+  });
   if (!open) return null;
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal wide" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-title">设置</div>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="modal wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
+        <div className="modal-title" id={titleId}>
+          设置
+        </div>
         <div className="modal-body settings-body">
           <label className="setting-row">
             <span className="setting-label">主题</span>
@@ -296,9 +403,11 @@ export function SettingsDialog({
                   key={theme}
                   type="button"
                   className={`level-chip ${settings.theme === theme ? "active" : ""}`}
+                  aria-label={themeLabel(theme)}
+                  aria-pressed={settings.theme === theme}
                   onClick={() => onChange({ theme })}
                 >
-                  {theme === "system" ? "跟随系统" : theme === "light" ? "亮色" : "暗色"}
+                  {themeLabel(theme)}
                 </button>
               ))}
             </div>
@@ -313,7 +422,9 @@ export function SettingsDialog({
                 max={20}
                 step={1}
                 value={settings.fontSize}
-                onChange={(event) => onChange({ fontSize: Number(event.target.value) })}
+                onChange={(event) =>
+                  onChange({ fontSize: Number(event.target.value) })
+                }
               />
               <span className="setting-value">{settings.fontSize}px</span>
             </div>
@@ -326,7 +437,9 @@ export function SettingsDialog({
                 className="input"
                 placeholder="留空使用内置字体栈"
                 value={settings.fontFamily}
-                onChange={(event) => onChange({ fontFamily: event.target.value })}
+                onChange={(event) =>
+                  onChange({ fontFamily: event.target.value })
+                }
               />
             </div>
           </label>
@@ -340,7 +453,9 @@ export function SettingsDialog({
                 max={480}
                 step={10}
                 value={settings.sidebarWidth}
-                onChange={(event) => onChange({ sidebarWidth: Number(event.target.value) })}
+                onChange={(event) =>
+                  onChange({ sidebarWidth: Number(event.target.value) })
+                }
               />
               <span className="setting-value">{settings.sidebarWidth}px</span>
             </div>
@@ -352,7 +467,9 @@ export function SettingsDialog({
               <input
                 type="checkbox"
                 checked={settings.expandTools}
-                onChange={(event) => onChange({ expandTools: event.target.checked })}
+                onChange={(event) =>
+                  onChange({ expandTools: event.target.checked })
+                }
               />
             </div>
           </label>
@@ -377,22 +494,27 @@ export function SettingsDialog({
           <label className="setting-row">
             <span className="setting-label">最小化到托盘</span>
             <div className="setting-control">
-              <input type="checkbox" checked={settings.minimizeToTray}
-                onChange={(event) => onChange({ minimizeToTray: event.target.checked })} />
+              <input
+                type="checkbox"
+                checked={settings.minimizeToTray}
+                onChange={(event) =>
+                  onChange({ minimizeToTray: event.target.checked })
+                }
+              />
             </div>
           </label>
-          <p className="setting-note">收起后任务继续运行。点击托盘图标恢复，右键菜单可退出；关闭窗口仍会退出应用。</p>
+          <p className="setting-note">
+            收起后任务继续运行。点击托盘图标恢复，右键菜单可退出；关闭窗口仍会退出应用。
+          </p>
 
           <section className="about-brand" aria-label="关于 Pi Workbench">
-            <img src={piMark} alt="Pi 官方彩色标志" />
-            <div><h3>关于 Pi Workbench</h3>
-              <p>个人使用的非官方 Pi 桌面客户端，未获 Pi / Earendil 官方背书。</p>
-              <p>图标采用 Pi 官方彩色标志，保留原图形和配色。</p>
-              <button type="button" className="link-button" onClick={() => {
-                void import("@tauri-apps/plugin-opener")
-                  .then(({ openUrl }) => openUrl("https://pi.dev/press-kit"))
-                  .catch((cause) => console.error("Unable to open Pi Press Kit", cause));
-              }}>图标来源：Pi Press Kit ↗</button>
+            <img src={piMark} alt="Pi Workbench 图标" />
+            <div>
+              <h3>关于 Pi Workbench</h3>
+              <p>
+                个人使用的非官方 Pi 桌面客户端，未获 Pi / Earendil 官方背书。
+              </p>
+              <p>图标为本项目原创设计，配色致敬 Pi 公开品牌形象。</p>
             </div>
           </section>
 
@@ -403,7 +525,7 @@ export function SettingsDialog({
           )}
         </div>
         <div className="modal-actions">
-          <button type="button" className="btn primary" onClick={onClose}>
+          <button type="button" className="btn primary" onClick={requestClose}>
             完成
           </button>
         </div>
@@ -412,7 +534,227 @@ export function SettingsDialog({
   );
 }
 
-/** Read-only session tree for branch navigation. */
+/** Rename a session without falling back to a native prompt. */
+export function RenameDialog({
+  open,
+  current,
+  onSubmit,
+  onClose,
+}: {
+  open: boolean;
+  current: string;
+  onSubmit: (name: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(current);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const titleId = useId();
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose,
+    dialogRef,
+    initialFocusRef: inputRef,
+    pending,
+  });
+
+  useEffect(() => {
+    if (open) {
+      setValue(current);
+      setError(null);
+    }
+  }, [open, current]);
+
+  if (!open) return null;
+  const submit = async () => {
+    if (pending || !value.trim()) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onSubmit(value.trim());
+      onClose();
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
+        <div className="modal-title" id={titleId}>
+          重命名会话
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <div className="modal-body">
+            <input
+              ref={inputRef}
+              className="input"
+              aria-label="会话名称"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              disabled={pending}
+              autoFocus
+            />
+            {error && (
+              <div className="row-error" role="alert">
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={requestClose}
+              disabled={pending}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={pending || !value.trim()}
+            >
+              {pending ? "保存中…" : "保存名称"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/** Confirmation dialog for destructive session operations. */
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel,
+  pendingLabel = "处理中…",
+  danger = false,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  pendingLabel?: string;
+  danger?: boolean;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+  const { requestClose, onKeyDown } = useDialogFocus({
+    open,
+    onClose,
+    dialogRef,
+    initialFocusRef: danger ? cancelRef : confirmRef,
+    pending,
+  });
+
+  useEffect(() => {
+    if (open) setError(null);
+  }, [open]);
+
+  if (!open) return null;
+  const confirm = async () => {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onConfirm();
+      onClose();
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) requestClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="modal"
+        role={danger ? "alertdialog" : "dialog"}
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
+        <div className="modal-title" id={titleId}>
+          {title}
+        </div>
+        <div className="modal-body">
+          <p className="confirm-message" id={messageId}>
+            {message}
+          </p>
+          {error && (
+            <div className="row-error" role="alert">
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button
+            ref={cancelRef}
+            type="button"
+            className="btn ghost"
+            onClick={requestClose}
+            disabled={pending}
+          >
+            取消
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className={`btn ${danger ? "danger" : "primary"}`}
+            onClick={() => void confirm()}
+            disabled={pending}
+          >
+            {pending ? pendingLabel : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Read-only session tree for branch navigation. */
 export function SessionTreePanel({
   tree,
@@ -444,7 +786,10 @@ export function SessionTreePanel({
 }
 
 function countNodes(nodes: TreeChild[]): number {
-  return nodes.reduce((total, node) => total + 1 + countNodes(node.children ?? []), 0);
+  return nodes.reduce(
+    (total, node) => total + 1 + countNodes(node.children ?? []),
+    0,
+  );
 }
 
 function TreeNode({
@@ -463,7 +808,11 @@ function TreeNode({
     <div className="tree-node">
       <div className="tree-row">
         {children.length > 0 ? (
-          <button type="button" className="tree-caret" onClick={() => setOpen(!open)}>
+          <button
+            type="button"
+            className="tree-caret"
+            onClick={() => setOpen(!open)}
+          >
             {open ? "▾" : "▸"}
           </button>
         ) : (
@@ -487,7 +836,11 @@ function TreeNode({
       {open && children.length > 0 && (
         <div className="tree-children">
           {children.map((child, index) => (
-            <TreeNode key={child.entry.id || index} node={child} onFork={onFork} />
+            <TreeNode
+              key={child.entry.id || index}
+              node={child}
+              onFork={onFork}
+            />
           ))}
         </div>
       )}
@@ -500,7 +853,8 @@ function entryLabel(entry: {
   [key: string]: unknown;
 }): string {
   if (entry.type === "message") {
-    const message = entry.message as { role?: string; content?: unknown } | undefined;
+    const message = entry.message as
+      { role?: string; content?: unknown } | undefined;
     const role = message?.role ?? "?";
     const text =
       typeof message?.content === "string"
@@ -522,5 +876,7 @@ function entryLabel(entry: {
     return `思考 → ${String(entry.thinkingLevel ?? "?")}`;
   }
   const time = new Date(entry.timestamp);
-  return Number.isFinite(time.getTime()) ? time.toLocaleTimeString() : entry.type;
+  return Number.isFinite(time.getTime())
+    ? time.toLocaleTimeString()
+    : entry.type;
 }

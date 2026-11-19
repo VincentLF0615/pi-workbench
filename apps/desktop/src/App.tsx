@@ -8,8 +8,10 @@ import { ModelPicker } from "./components/ModelPicker";
 import { Dock, type DockTab } from "./components/Dock";
 import {
   CommandPalette,
+  ConfirmDialog,
   ForkDialog,
   Menu,
+  RenameDialog,
   type MenuItem,
   SessionTreePanel,
   SettingsDialog,
@@ -37,6 +39,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deletePath, setDeletePath] = useState<string | null>(null);
   const [forkMessages, setForkMessages] = useState<
     { entryId: string; text: string }[] | null
   >(null);
@@ -57,6 +61,27 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
         event.preventDefault();
         setDockOpen((open) => !open);
+      }
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !menu &&
+        !paletteOpen &&
+        !settingsOpen &&
+        !forkOpen &&
+        !renameOpen &&
+        !deletePath &&
+        active?.busy &&
+        !active.stopping
+      ) {
+        if (
+          event.target instanceof HTMLElement &&
+          event.target.closest('[aria-modal="true"], [role="menu"]')
+        ) {
+          return;
+        }
+        event.preventDefault();
+        void store.abort();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -105,6 +130,13 @@ export default function App() {
     store.updateSettings,
   ]);
 
+  useEffect(() => {
+    const title = active?.windowTitle?.trim() || "Pi Workbench";
+    void api
+      .setWindowTitle(title)
+      .catch((cause) => console.error("Unable to set window title", cause));
+  }, [active?.info.id, active?.windowTitle]);
+
   const runCommand = useCallback(
     (name: string) => {
       if (!activeId) return;
@@ -126,16 +158,31 @@ export default function App() {
     }
   }, [activeId]);
 
+  const openSessionMenu = (sessionId: string, x: number, y: number) => {
+    store.setActiveId(sessionId);
+    setMenu({ x, y, sessionId });
+  };
+
   const menuItems: MenuItem[] = activeId
     ? [
         {
-          label: "重命名",
+          label: "刷新状态与用量",
+          onSelect: () => void store.refreshState(),
+        },
+        {
+          label: "最小化到托盘",
           onSelect: () => {
-            const current =
-              sessions.find((s) => s.info.id === activeId)?.info.label ?? "";
-            const name = window.prompt("会话名称", current);
-            if (name) void store.rename(name);
+            void api
+              .minimizeToTray()
+              .catch((cause) =>
+                console.error("Unable to minimize to tray", cause),
+              );
           },
+        },
+        { kind: "separator" },
+        {
+          label: "重命名",
+          onSelect: () => setRenameOpen(true),
         },
         { label: "从这里分叉…", onSelect: () => void openFork() },
         { label: "克隆为新会话", onSelect: () => void store.clone() },
@@ -156,18 +203,18 @@ export default function App() {
         {
           label: "删除会话文件",
           tone: "danger",
+          disabled: !active?.info.sessionPath,
+          hint: active?.info.sessionPath ? undefined : "尚未保存",
           onSelect: () => {
             const path = active?.info.sessionPath;
-            if (!path) {
-              window.alert("这个会话还没有写入文件");
-              return;
-            }
-            if (window.confirm(`删除会话文件？\n${path}`)) {
-              void store.deleteSession(path);
-            }
+            if (path) setDeletePath(path);
           },
         },
       ]
+    : [];
+
+  const extensionStatuses = active
+    ? Object.values(active.extensionStatuses).filter((text) => text.trim())
     : [];
 
   return (
@@ -186,14 +233,13 @@ export default function App() {
           void store.openProject(projectDir, sessionPath)
         }
         onClose={(id) => void store.closeSession(id)}
-        onNewSession={() => {
-          const last = sessions[sessions.length - 1];
-          const dir =
-            last?.info.projectDir ??
-            store.settings?.lastProject ??
-            "E:\\default-workspace";
-          void store.openProject(dir);
-        }}
+        newSessionProjectDir={
+          active?.info.projectDir ??
+          sessions[sessions.length - 1]?.info.projectDir ??
+          store.settings?.lastProject ??
+          null
+        }
+        onNewSession={(projectDir) => void store.openProject(projectDir)}
       />
 
       <main className="main">
@@ -228,37 +274,53 @@ export default function App() {
         {sessions.length > 0 && (
           <div className="tabs">
             {sessions.map((runtime) => (
-              <button
+              <div
                 key={runtime.info.id}
-                type="button"
                 className={`tab ${runtime.info.id === activeId ? "active" : ""}`}
-                onClick={() => store.setActiveId(runtime.info.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  store.setActiveId(runtime.info.id);
-                  setMenu({
-                    x: event.clientX,
-                    y: event.clientY,
-                    sessionId: runtime.info.id,
-                  });
+                  openSessionMenu(
+                    runtime.info.id,
+                    event.clientX,
+                    event.clientY,
+                  );
                 }}
-                title={runtime.info.projectDir}
               >
-                <span className={`tab-dot ${runtime.busy ? "busy" : ""}`} />
-                <span className="tab-label">{runtime.info.label}</span>
-                <span
-                  className="session-close"
-                  role="button"
-                  tabIndex={-1}
+                <button
+                  type="button"
+                  className="tab-select"
+                  onClick={() => store.setActiveId(runtime.info.id)}
+                  title={runtime.info.projectDir}
+                  aria-current={
+                    runtime.info.id === activeId ? "page" : undefined
+                  }
+                >
+                  <span className={`tab-dot ${runtime.busy ? "busy" : ""}`} />
+                  <span className="tab-label">{runtime.info.label}</span>
+                </button>
+                <button
+                  type="button"
+                  className="tab-action"
+                  aria-label={`会话操作：${runtime.info.label}`}
+                  aria-haspopup="menu"
+                  title="会话操作"
                   onClick={(event) => {
-                    event.stopPropagation();
-                    void store.closeSession(runtime.info.id);
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openSessionMenu(runtime.info.id, rect.right, rect.bottom);
                   }}
+                >
+                  ⋯
+                </button>
+                <button
+                  type="button"
+                  className="session-close"
+                  aria-label={`关闭会话：${runtime.info.label}`}
+                  onClick={() => void store.closeSession(runtime.info.id)}
                   title="关闭会话"
                 >
                   ×
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -289,22 +351,10 @@ export default function App() {
                 <button
                   type="button"
                   className="btn ghost"
-                  aria-label="最小化到托盘"
-                  title="最小化到托盘，后台任务继续运行"
                   onClick={() => {
-                    void api
-                      .minimizeToTray()
-                      .catch((cause) =>
-                        console.error("Unable to minimize to tray", cause),
-                      );
+                    setPaletteOpen(true);
+                    void store.loadCommands();
                   }}
-                >
-                  托盘
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={() => setPaletteOpen(true)}
                   title="命令面板（Ctrl+K）"
                 >
                   命令
@@ -313,30 +363,16 @@ export default function App() {
                   type="button"
                   className={`btn ghost ${treeOpen ? "active" : ""}`}
                   onClick={() => setTreeOpen(!treeOpen)}
+                  aria-pressed={treeOpen}
                   title="会话树"
                 >
-                  树
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={() => void store.refreshState()}
-                  title="刷新状态与用量"
-                >
-                  刷新
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={() => void store.compact()}
-                  title="手动压缩上下文"
-                >
-                  压缩
+                  会话树
                 </button>
                 <button
                   type="button"
                   className={`btn ghost ${dockOpen ? "active" : ""}`}
                   onClick={() => setDockOpen(!dockOpen)}
+                  aria-pressed={dockOpen}
                   title="右侧工作台（Ctrl+B）"
                 >
                   面板
@@ -378,6 +414,7 @@ export default function App() {
                 <Dock
                   projectDir={active.info.projectDir}
                   sessionId={active.info.id}
+                  widgets={active.extensionWidgets}
                   tab={dockTab}
                   onTab={setDockTab}
                   onReveal={(path) => {
@@ -395,25 +432,41 @@ export default function App() {
               disabled={active.info.closed || !active.state}
               model={active.state?.model}
               draft={active.draft}
+              queues={active.queues}
+              pendingMessageCount={active.state?.pendingMessageCount}
+              stopping={active.stopping}
               onDraftChange={(draft) => store.setDraft(active.info.id, draft)}
               onSend={store.send}
               onSteer={store.steer}
+              onFollowUp={store.followUp}
               onAbort={() => void store.abort()}
             />
 
             {active.stats?.totalTokens != null && (
-              <footer className="statusbar">
-                <span>
-                  {active.info.projectDir} · pid {active.info.pid} ·{" "}
-                  {active.info.launchSource}
-                </span>
-                <span>
+              <footer
+                className="statusbar"
+                title={`pid ${active.info.pid} · ${active.info.launchSource}${
+                  active.state?.sessionFile
+                    ? `\n${active.state.sessionFile}`
+                    : ""
+                }`}
+              >
+                <span className="status-project">{active.info.projectDir}</span>
+                {extensionStatuses.length > 0 && (
+                  <span
+                    className="status-extension"
+                    title={extensionStatuses.join("\n")}
+                  >
+                    {extensionStatuses[0]}
+                    {extensionStatuses.length > 1
+                      ? ` +${extensionStatuses.length - 1}`
+                      : ""}
+                  </span>
+                )}
+                <span className="status-tokens">
                   tokens {formatTokens(active.stats.totalTokens!)}
                   {active.stats.contextWindow
                     ? ` / ${formatTokens(active.stats.contextWindow)}`
-                    : ""}
-                  {active.state?.sessionFile
-                    ? ` · ${active.state.sessionFile}`
                     : ""}
                 </span>
               </footer>
@@ -435,7 +488,7 @@ export default function App() {
                   在左侧选择项目开始，或点「打开项目」输入目录。
                 </p>
                 <p className="muted">
-                  Ctrl+K 打开命令面板 · 右键标签页重命名/分叉/删除
+                  Ctrl+K 打开命令面板 · 标签页「⋯」或右键打开会话操作
                 </p>
               </>
             )}
@@ -475,6 +528,28 @@ export default function App() {
           settingsPath={store.settingsPath}
           onChange={(patch) => void store.updateSettings(patch)}
           onClose={() => setSettingsOpen(false)}
+        />
+
+        <RenameDialog
+          open={renameOpen}
+          current={active?.info.label ?? ""}
+          onSubmit={async (name) => {
+            await store.rename(name);
+          }}
+          onClose={() => setRenameOpen(false)}
+        />
+
+        <ConfirmDialog
+          open={deletePath !== null}
+          title="删除会话文件？"
+          message={`此操作会关闭对应会话，并将文件移到回收站（若系统支持）。\n${deletePath ?? ""}`}
+          confirmLabel="删除会话"
+          pendingLabel="正在删除…"
+          danger
+          onConfirm={async () => {
+            if (deletePath) await store.deleteSession(deletePath);
+          }}
+          onClose={() => setDeletePath(null)}
         />
 
         {sessions.flatMap((runtime) =>

@@ -1,6 +1,6 @@
 //! Tauri entry point: registers state, commands, and shutdown handling.
 
-mod commands;
+pub mod commands;
 pub mod files;
 pub mod git;
 mod model_options;
@@ -29,6 +29,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         // One app process. A second launch hands its arguments to the running
         // instance instead of starting a duplicate.
         .plugin(tauri_plugin_single_instance::init({

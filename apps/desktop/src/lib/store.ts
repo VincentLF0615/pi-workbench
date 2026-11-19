@@ -12,6 +12,7 @@ import { normalizeStats } from "./stats";
 import { messageText } from "./types";
 import type {
   PiBatch,
+  PiQueues,
   PiState,
   SessionFileInfo,
   SessionInfo,
@@ -35,6 +36,12 @@ export interface SessionRuntime {
   draft: Draft;
   uiRequests: UiRequest[];
   busy: boolean;
+  /** Null until Pi provides an authoritative queue_update snapshot. */
+  queues: PiQueues | null;
+  stopping: boolean;
+  extensionStatuses: Record<string, string>;
+  extensionWidgets: Record<string, string[]>;
+  windowTitle?: string;
   toasts: { id: number; message: string }[];
   /** Session tree, loaded on demand. */
   tree: SessionTreeNode[] | null;
@@ -109,6 +116,7 @@ export interface UseSessionsResult {
   closeSession: (id: string) => Promise<void>;
   send: (text: string, images?: ImageContent[]) => Promise<void>;
   steer: (text: string, images?: ImageContent[]) => Promise<void>;
+  followUp: (text: string, images?: ImageContent[]) => Promise<void>;
   setDraft: (id: string, draft: Draft) => void;
   abort: () => Promise<void>;
   answerUi: (
@@ -146,6 +154,10 @@ export function emptyRuntime(info: SessionInfo): SessionRuntime {
     draft: { text: "", images: [] },
     uiRequests: [],
     busy: false,
+    queues: null,
+    stopping: false,
+    extensionStatuses: {},
+    extensionWidgets: {},
     toasts: [],
     tree: null,
     commands: null,
@@ -166,9 +178,22 @@ export function applySnapshot(
     state: snapshot.state,
     stats: normalizeStats(snapshot.stats),
     busy: !!(snapshot.state.isStreaming || snapshot.state.isCompacting),
+    queues: same ? (previous?.queues ?? null) : null,
+    stopping: same ? (previous?.stopping ?? false) : false,
+    extensionStatuses: same ? previous.extensionStatuses : {},
+    extensionWidgets: same ? previous.extensionWidgets : {},
+    windowTitle: same ? previous.windowTitle : undefined,
     tree: null,
     uiRequests: same ? previous.uiRequests : [],
   };
+}
+
+function notificationTone(
+  value: string | undefined,
+): "info" | "warn" | "error" {
+  if (value === "error") return "error";
+  if (value === "warning" || value === "warn") return "warn";
+  return "info";
 }
 
 /**
@@ -186,6 +211,7 @@ export function useSessions(): UseSessionsResult {
   const [error, setError] = useState<string | null>(null);
   const toastSeq = useRef(0);
   const sessionsRef = useRef<SessionRuntime[]>([]);
+  const stoppingRef = useRef(new Set<string>());
   sessionsRef.current = sessions;
 
   const patch = useCallback(
@@ -316,13 +342,30 @@ export function useSessions(): UseSessionsResult {
           let items = runtime.transcript;
           let busy = runtime.busy;
           let uiRequests = runtime.uiRequests;
+          let queues = runtime.queues;
+          let pendingMessageCount = runtime.state?.pendingMessageCount;
           let label = runtime.info.label;
           let thinking = runtime.state?.thinkingLevel;
+          let extensionStatuses = runtime.extensionStatuses;
+          let extensionWidgets = runtime.extensionWidgets;
+          let nextWindowTitle = runtime.windowTitle;
+          const exited = batch.events.some((e) => e.kind === "exited");
 
           for (const envelope of batch.events) {
             const result = applyEvent(items, envelope, busy);
             items = result.items;
             busy = result.busy;
+            if (
+              envelope.kind === "pi" &&
+              envelope.event.type === "queue_update"
+            ) {
+              queues = {
+                steering: [...envelope.event.steering],
+                followUp: [...envelope.event.followUp],
+              };
+              pendingMessageCount =
+                queues.steering.length + queues.followUp.length;
+            }
             if (envelope.kind === "ui") {
               const request = envelope.event;
               if (
@@ -347,9 +390,29 @@ export function useSessions(): UseSessionsResult {
                     kind: "info",
                     id: nextId(),
                     text: request.message ?? request.title ?? "通知",
-                    tone: "info",
+                    tone: notificationTone(request.notifyType),
                   },
                 ];
+              } else if (request.method === "setStatus") {
+                const key = request.statusKey?.trim();
+                if (key) {
+                  extensionStatuses = { ...extensionStatuses };
+                  if (request.statusText?.trim()) {
+                    extensionStatuses[key] = request.statusText;
+                  } else {
+                    delete extensionStatuses[key];
+                  }
+                }
+              } else if (request.method === "setWidget") {
+                const key = request.widgetKey?.trim();
+                if (key) {
+                  extensionWidgets = { ...extensionWidgets };
+                  const lines = request.widgetLines ?? [];
+                  if (lines.length > 0) extensionWidgets[key] = [...lines];
+                  else delete extensionWidgets[key];
+                }
+              } else if (request.method === "setTitle") {
+                nextWindowTitle = request.title?.trim() || undefined;
               }
             }
             if (envelope.kind !== "pi") continue;
@@ -363,18 +426,23 @@ export function useSessions(): UseSessionsResult {
             ...runtime,
             transcript: items,
             busy,
-            uiRequests: batch.events.some((e) => e.kind === "exited")
-              ? []
-              : uiRequests,
+            queues,
+            stopping: exited ? false : runtime.stopping,
+            uiRequests: exited ? [] : uiRequests,
+            extensionStatuses: exited ? {} : extensionStatuses,
+            extensionWidgets: exited ? {} : extensionWidgets,
+            windowTitle: exited ? undefined : nextWindowTitle,
             info: {
               ...runtime.info,
               label,
-              closed:
-                runtime.info.closed ||
-                batch.events.some((e) => e.kind === "exited"),
+              closed: runtime.info.closed || exited,
             },
             state: runtime.state
-              ? { ...runtime.state, thinkingLevel: thinking }
+              ? {
+                  ...runtime.state,
+                  thinkingLevel: thinking,
+                  pendingMessageCount,
+                }
               : runtime.state,
           };
         }),
@@ -515,7 +583,11 @@ export function useSessions(): UseSessionsResult {
         ],
       }));
       try {
-        await api.sendPrompt(id, text, images);
+        const result = await api.sendPrompt(id, text, images);
+        if (result?.disposition === "handled") {
+          // Extension/input handlers can consume a command without starting a run.
+          patch(id, (runtime) => ({ ...runtime, busy: false }));
+        }
       } catch (cause) {
         setError(String(cause));
         patch(id, (runtime) => ({
@@ -537,15 +609,52 @@ export function useSessions(): UseSessionsResult {
     [activeId],
   );
 
+  const followUp = useCallback(
+    async (text: string, images: ImageContent[] = []) => {
+      if (!activeId || (!text.trim() && images.length === 0)) return;
+      await api.followUp(activeId, text, images);
+    },
+    [activeId],
+  );
+
   const abort = useCallback(async () => {
     const id = activeId;
     if (!id) return;
+    const current = sessionsRef.current.find(
+      (runtime) => runtime.info.id === id,
+    );
+    if (current?.stopping || stoppingRef.current.has(id)) return;
+    stoppingRef.current.add(id);
+    setError(null);
+    patch(id, (runtime) => ({ ...runtime, stopping: true }));
     try {
-      await api.abort(id);
+      const result = await api.abort(id);
+      const recovered = [...result.steering, ...result.followUp]
+        .filter((text) => text.trim())
+        .join("\n\n");
+      patch(id, (runtime) => ({
+        ...runtime,
+        queues: { steering: [], followUp: [] },
+        draft: recovered
+          ? {
+              ...runtime.draft,
+              text: runtime.draft.text
+                ? `${recovered}\n\n${runtime.draft.text}`
+                : recovered,
+            }
+          : runtime.draft,
+        state: runtime.state
+          ? { ...runtime.state, pendingMessageCount: 0 }
+          : runtime.state,
+      }));
+      if (result.abortError) setError(result.abortError);
     } catch (cause) {
       setError(String(cause));
+    } finally {
+      stoppingRef.current.delete(id);
+      patch(id, (runtime) => ({ ...runtime, stopping: false }));
     }
-  }, [activeId]);
+  }, [activeId, patch]);
 
   const answerUi = useCallback(
     async (
@@ -845,6 +954,7 @@ export function useSessions(): UseSessionsResult {
     closeSession,
     send,
     steer,
+    followUp,
     setDraft,
     abort,
     answerUi,

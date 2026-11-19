@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { copyText } from "../lib/clipboard";
+import { openExternal, safeExternalUrl } from "../lib/external";
 
 import type { AssistantBlock, messageText, textOfContent, toolResultText, TranscriptItem } from "../lib/types";
 
@@ -113,14 +115,7 @@ function splitBlocks(text: string): Block[] {
 function Block({ block }: { block: Block }) {
   switch (block.kind) {
     case "code":
-      return (
-        <div className="md-code">
-          {block.lang && <div className="md-code-lang">{block.lang}</div>}
-          <pre>
-            <code>{block.code}</code>
-          </pre>
-        </div>
-      );
+      return <CodeBlock block={block} />;
     case "heading": {
       const Tag = (`h${Math.min(block.level, 6)}`) as "h1";
       return <Tag className="md-heading">{inline(block.text)}</Tag>;
@@ -162,11 +157,89 @@ function inline(text: string) {
     const bold = part.split(/(\*\*[^*]+\*\*)/g);
     return bold.map((chunk, chunkIndex) => {
       if (chunk.startsWith("**") && chunk.endsWith("**") && chunk.length > 4) {
-        return <strong key={`${index}-${chunkIndex}`}>{chunk.slice(2, -2)}</strong>;
+        return <strong key={`${index}-${chunkIndex}`}>{renderLinks(chunk.slice(2, -2))}</strong>;
       }
-      return <span key={`${index}-${chunkIndex}`}>{chunk}</span>;
+      return <span key={`${index}-${chunkIndex}`}>{renderLinks(chunk)}</span>;
     });
   });
+}
+
+function renderLinks(text: string) {
+  const parts = text.split(/(\[[^\]]+\]\([^)]+\))/g);
+  return parts.map((part, index) => {
+    const match = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (!match) return part;
+    const url = safeExternalUrl(match[2]);
+    return url ? (
+      <ExternalLink key={`${index}:${url}`} url={url}>
+        {match[1]}
+      </ExternalLink>
+    ) : (
+      part
+    );
+  });
+}
+
+function ExternalLink({
+  url,
+  children,
+}: {
+  url: string;
+  children: React.ReactNode;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="md-link">
+      <a
+        href={url}
+        rel="noreferrer noopener"
+        title={error ?? `打开链接：${url}`}
+        onClick={(event) => {
+          event.preventDefault();
+          setError(null);
+          void openExternal(url).catch((cause) => setError(String(cause)));
+        }}
+      >
+        {children}
+      </a>
+      {error && <span className="md-link-error" role="alert">打开失败</span>}
+    </span>
+  );
+}
+
+function CodeBlock({ block }: { block: Extract<Block, { kind: "code" }> }) {
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <div className="md-code">
+      <div className="md-codebar">
+        <span className="md-code-lang">{block.lang || "代码"}</span>
+        <button
+          type="button"
+          className="code-copy"
+          aria-label="复制代码"
+          title={error ?? "复制代码"}
+          onClick={() => {
+            setError(null);
+            void copyText(block.code)
+              .then(() => setCopied(true))
+              .catch((cause) => setError(String(cause)));
+          }}
+        >
+          {error ? "复制失败" : copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      <pre>
+        <code>{block.code}</code>
+      </pre>
+    </div>
+  );
 }
 
 /** Render one assistant message block. */
@@ -180,7 +253,7 @@ export function ThinkingBlockView({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="thinking">
-      <button type="button" className="thinking-toggle" onClick={() => setOpen(!open)}>
+      <button type="button" className="thinking-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
         {open ? "▾" : "▸"} 思考过程（{text.length} 字）
       </button>
       {open && <pre className="thinking-body">{text}</pre>}
@@ -218,7 +291,7 @@ export function ToolCard({
 
   return (
     <div className={`tool-card tool-${item.state}`}>
-      <button type="button" className="tool-head" onClick={() => setOpen(!open)}>
+      <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className={`tool-dot tool-dot-${item.state}`} />
         <span className="tool-name">{item.name}</span>
         {filePath ? (

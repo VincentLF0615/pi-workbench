@@ -1,5 +1,5 @@
 use pi_rpc::{ClientEvent, PiEvent};
-use pi_workbench_lib::session::SessionState;
+use pi_workbench_lib::{commands, session::SessionState};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -40,12 +40,92 @@ fn slow_mutation_does_not_block_other_sessions_or_abort() {
         matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
         "another session waited for compaction"
     );
-    state.with(&a, |c| c.abort()).unwrap();
+    state.with(&a, commands::stop_with_queue).unwrap();
     done_rx
         .recv_timeout(Duration::from_secs(2))
         .unwrap()
         .unwrap();
     worker.join().unwrap();
+    state.shutdown();
+}
+
+#[test]
+fn stop_recovers_queue_before_abort() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(SessionState::default());
+    let id = open(&state, dir.path(), None);
+    state
+        .with(&id, |client| {
+            client.request(json!({
+                "type": "seed_queue",
+                "steering": ["adjust the current task"],
+                "followUp": ["summarize afterwards"]
+            }))
+        })
+        .unwrap();
+
+    let outcome = state.with(&id, commands::stop_with_queue).unwrap();
+    assert_eq!(outcome.steering, ["adjust the current task"]);
+    assert_eq!(outcome.follow_up, ["summarize afterwards"]);
+    assert_eq!(outcome.abort_error, None);
+    let log = state
+        .with(&id, |client| {
+            client.request(json!({"type": "get_control_log"}))
+        })
+        .unwrap();
+    assert_eq!(log["controlLog"], json!(["clear_queue", "abort"]));
+    state.shutdown();
+}
+
+#[test]
+fn clear_failure_does_not_abort() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(SessionState::default());
+    let id = open(&state, dir.path(), None);
+    state
+        .with(&id, |client| {
+            client.request(json!({"type": "fail_clear_queue"}))
+        })
+        .unwrap();
+
+    let error = state.with(&id, commands::stop_with_queue).unwrap_err();
+    assert!(error.to_string().contains("尚未停止"));
+    let log = state
+        .with(&id, |client| {
+            client.request(json!({"type": "get_control_log"}))
+        })
+        .unwrap();
+    assert_eq!(log["controlLog"], json!(["clear_queue"]));
+    state.shutdown();
+}
+
+#[test]
+fn abort_failure_still_returns_recovered_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(SessionState::default());
+    let id = open(&state, dir.path(), None);
+    state
+        .with(&id, |client| {
+            client.request(json!({
+                "type": "seed_queue",
+                "steering": ["recover me"],
+                "followUp": []
+            }))
+        })
+        .unwrap();
+    state
+        .with(&id, |client| client.request(json!({"type": "fail_abort"})))
+        .unwrap();
+
+    let outcome = state.with(&id, commands::stop_with_queue).unwrap();
+    assert_eq!(outcome.steering, ["recover me"]);
+    assert!(outcome.abort_error.is_some());
+    let log = state
+        .with(&id, |client| {
+            client.request(json!({"type": "get_control_log"}))
+        })
+        .unwrap();
+    assert_eq!(log["controlLog"], json!(["clear_queue", "abort"]));
     state.shutdown();
 }
 

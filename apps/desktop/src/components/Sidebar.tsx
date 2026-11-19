@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 
 import { api } from "../lib/api";
 import type { ProjectGroupInfo, SessionFileInfo } from "../lib/types";
 import type { SessionRuntime } from "../lib/store";
-import piMark from "../assets/pi-mark.svg";
+import piMark from "../assets/pi-mark.png";
 
 /** Left sidebar: projects, their sessions, and the sessions open in this app. */
 export function Sidebar({
@@ -13,6 +14,7 @@ export function Sidebar({
   onSelect,
   onOpen,
   onClose,
+  newSessionProjectDir,
   onNewSession,
 }: {
   projects: ProjectGroupInfo[];
@@ -21,12 +23,47 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onOpen: (projectDir: string, sessionPath?: string) => void;
   onClose: (id: string) => void;
-  onNewSession: () => void;
+  newSessionProjectDir: string | null;
+  onNewSession: (projectDir: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState(false);
   const [newPath, setNewPath] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+  const projectInput = useRef<HTMLInputElement>(null);
+
+  const revealProjectInput = () => {
+    setPickError(null);
+    setAdding(true);
+    window.setTimeout(() => projectInput.current?.focus(), 0);
+  };
+
+  const chooseProject = async () => {
+    if (picking) return;
+    setPicking(true);
+    setPickError(null);
+    try {
+      const selected = await openDirectory({
+        directory: true,
+        multiple: false,
+        title: "选择 Pi 项目目录",
+        defaultPath: newSessionProjectDir ?? undefined,
+      });
+      if (typeof selected === "string" && selected.trim()) {
+        setAdding(false);
+        setNewPath("");
+        onOpen(selected);
+      }
+    } catch (cause) {
+      setPickError(`目录选择器不可用：${String(cause)}。请手动输入路径。`);
+      setAdding(true);
+      window.setTimeout(() => projectInput.current?.focus(), 0);
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const filtered = projects
     .map((group) => ({
@@ -42,19 +79,54 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand"><img src={piMark} alt="" /><div><strong>Pi Workbench</strong><small>你的编程工作台</small></div></div>
+      <div className="sidebar-brand">
+        <img src={piMark} alt="" />
+        <div>
+          <strong>Pi Workbench</strong>
+          <small>你的编程工作台</small>
+        </div>
+      </div>
       <div className="sidebar-top">
-        <button type="button" className="btn primary block" onClick={onNewSession}>
+        <button
+          type="button"
+          className="btn primary block"
+          onClick={() => {
+            if (newSessionProjectDir) onNewSession(newSessionProjectDir);
+            else void chooseProject();
+          }}
+          disabled={picking}
+        >
           新会话
         </button>
-        <button type="button" className="btn ghost block" onClick={() => setAdding(!adding)}>
-          打开项目…
+        <button
+          type="button"
+          className="btn ghost block"
+          onClick={() => void chooseProject()}
+          disabled={picking}
+        >
+          {picking ? "选择中…" : "打开项目…"}
         </button>
       </div>
+      {!adding && (
+        <button
+          type="button"
+          className="link-button sidebar-manual"
+          onClick={revealProjectInput}
+          disabled={picking}
+        >
+          手动输入路径
+        </button>
+      )}
 
       {adding && (
         <div className="sidebar-add">
+          {pickError && (
+            <div className="sidebar-error" role="alert">
+              {pickError}
+            </div>
+          )}
           <input
+            ref={projectInput}
             className="input"
             placeholder="项目目录，例如 E:\project"
             value={newPath}
@@ -95,29 +167,37 @@ export function Sidebar({
         {sessions.length > 0 && (
           <Section title="已打开" count={sessions.length}>
             {sessions.map((runtime) => (
-              <button
+              <div
                 key={runtime.info.id}
-                type="button"
                 className={`session-row ${runtime.info.id === activeId ? "active" : ""}`}
-                onClick={() => onSelect(runtime.info.id)}
-                title={runtime.info.projectDir}
               >
-                <span className={`session-dot ${runtime.busy ? "busy" : ""}`} />
-                <span className="session-label">{runtime.info.label}</span>
-                {runtime.info.closed && <span className="session-flag">已断开</span>}
-                <span
+                <button
+                  type="button"
+                  className="session-select"
+                  onClick={() => onSelect(runtime.info.id)}
+                  title={runtime.info.projectDir}
+                  aria-current={
+                    runtime.info.id === activeId ? "page" : undefined
+                  }
+                >
+                  <span
+                    className={`session-dot ${runtime.busy ? "busy" : ""}`}
+                  />
+                  <span className="session-label">{runtime.info.label}</span>
+                  {runtime.info.closed && (
+                    <span className="session-flag">已断开</span>
+                  )}
+                </button>
+                <button
+                  type="button"
                   className="session-close"
-                  role="button"
-                  tabIndex={-1}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onClose(runtime.info.id);
-                  }}
+                  onClick={() => onClose(runtime.info.id)}
                   title="关闭会话"
+                  aria-label={`关闭会话：${runtime.info.label}`}
                 >
                   ×
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </Section>
         )}
@@ -176,7 +256,12 @@ function Section({
     <div className="sidebar-section">
       <div className="sidebar-section-head">
         {collapsible ? (
-          <button type="button" className="sidebar-section-title" onClick={onToggle}>
+          <button
+            type="button"
+            className="sidebar-section-title"
+            onClick={onToggle}
+            aria-expanded={open}
+          >
             <span className="caret">{open ? "▾" : "▸"}</span>
             <span className="truncate" title={title}>
               {title}
@@ -207,8 +292,15 @@ function SessionRow({
   const date = new Date(session.modifiedAt);
   const when = Number.isFinite(date.getTime()) ? formatWhen(date) : "";
   return (
-    <button type="button" className="session-row file" onClick={onOpen} title={session.path}>
-      <span className="session-label truncate">{session.preview || "（空会话）"}</span>
+    <button
+      type="button"
+      className="session-row file"
+      onClick={onOpen}
+      title={session.path}
+    >
+      <span className="session-label truncate">
+        {session.preview || "（空会话）"}
+      </span>
       <span className="session-meta">
         {session.messageCount > 0 && <span>{session.messageCount} 条</span>}
         {when && <span>{when}</span>}

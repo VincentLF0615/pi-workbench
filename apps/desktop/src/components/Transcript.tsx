@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import {
   Markdown,
@@ -20,19 +20,23 @@ export function Transcript({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
+  const [pinned, setPinned] = useState(true);
+  const empty = items.length === 0;
 
-  // Keep the view pinned to the bottom while new content streams in.
+  // Follow output only while the user remains near the latest message.
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
     const onScroll = () => {
       const distance =
         element.scrollHeight - element.scrollTop - element.clientHeight;
-      pinnedRef.current = distance < 80;
+      const next = distance < 80;
+      pinnedRef.current = next;
+      setPinned(next);
     };
     element.addEventListener("scroll", onScroll, { passive: true });
     return () => element.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [empty]);
 
   useEffect(() => {
     if (!pinnedRef.current) return;
@@ -40,38 +44,59 @@ export function Transcript({
     if (element) element.scrollTop = element.scrollHeight;
   }, [items, busy]);
 
-  if (items.length === 0) {
+  if (empty) {
     return (
       <div ref={scrollRef} className="transcript empty">
         <div className="empty-card">
           <h2>开始对话</h2>
           <p>选择左侧的项目或会话开始；也可以直接在下方输入。</p>
           <p className="muted">
-            提示：运行中按 Esc 或点「停止」中断；输入新消息会作为 steer 追加。
+            运行中：Enter 追加指令，「稍后跟进」等当前任务结束；Esc
+            停止并取回排队文字。
           </p>
         </div>
       </div>
     );
   }
 
+  const scrollToLatest = () => {
+    const element = scrollRef.current;
+    if (!element) return;
+    pinnedRef.current = true;
+    setPinned(true);
+    element.scrollTop = element.scrollHeight;
+  };
+
   return (
-    <div ref={scrollRef} className="transcript">
-      {items.map((item) => (
-        <Row key={item.id} item={item} expandTools={expandTools} />
-      ))}
-      {busy && (
-        <div className="row assistant">
-          <div className="bubble assistant">
-            <span className="cursor" />
+    <div className="transcript-shell">
+      <div ref={scrollRef} className="transcript">
+        {items.map((item) => (
+          <Row key={item.id} item={item} expandTools={expandTools} />
+        ))}
+        {busy && (
+          <div className="row assistant">
+            <div className="bubble assistant">
+              <span className="cursor" />
+            </div>
           </div>
-        </div>
+        )}
+        <div className="transcript-end" />
+      </div>
+      {!pinned && (
+        <button
+          type="button"
+          className="jump-latest"
+          onClick={scrollToLatest}
+          aria-label="回到最新消息"
+        >
+          ↓ 回到最新
+        </button>
       )}
-      <div className="transcript-end" />
     </div>
   );
 }
 
-function Row({
+const Row = memo(function Row({
   item,
   expandTools,
 }: {
@@ -129,14 +154,7 @@ function Row({
     case "bash":
       return (
         <div className="row tool">
-          <div className="tool-card tool-ok">
-            <div className="tool-head static">
-              <span className="tool-name">bash</span>
-              <span className="tool-summary">{item.command}</span>
-              <span className="tool-meta">{item.exitCode ?? "?"}</span>
-            </div>
-            {item.output && <pre className="tool-output">{item.output}</pre>}
-          </div>
+          <BashCard item={item} defaultOpen={expandTools} />
         </div>
       );
     case "compaction":
@@ -164,6 +182,37 @@ function Row({
         </div>
       );
   }
+});
+
+function BashCard({
+  item,
+  defaultOpen,
+}: {
+  item: Extract<TranscriptItem, { kind: "bash" }>;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const failed = item.exitCode != null && item.exitCode !== 0;
+  return (
+    <div className={`tool-card ${failed ? "tool-error" : "tool-ok"}`}>
+      <button
+        type="button"
+        className="tool-head"
+        onClick={() => setOpen(!open)}
+        disabled={!item.output}
+        aria-expanded={open}
+        title={item.output ? "展开或折叠 Bash 输出" : "没有输出"}
+      >
+        <span className="tool-name">bash</span>
+        <span className="tool-summary">{item.command}</span>
+        <span className="tool-meta">退出码 {item.exitCode ?? "?"}</span>
+        <span className="tool-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && item.output && <pre className="tool-output">{item.output}</pre>}
+    </div>
+  );
 }
 
 export function formatTokens(value: number): string {

@@ -28,6 +28,17 @@ export interface PiState {
   pendingMessageCount?: number;
 }
 
+/** Authoritative queued text from `queue_update` / `clear_queue`. */
+export interface PiQueues {
+  steering: string[];
+  followUp: string[];
+}
+
+/** Queue text is recovered even when the subsequent abort fails. */
+export interface AbortResult extends PiQueues {
+  abortError?: string | null;
+}
+
 export interface PiUsage {
   input: number;
   output: number;
@@ -254,6 +265,13 @@ export interface UiRequest {
   placeholder?: string;
   prefill?: string;
   timeout?: number;
+  notifyType?: "info" | "warning" | "error" | string;
+  statusKey?: string;
+  statusText?: string;
+  widgetKey?: string;
+  widgetLines?: string[];
+  widgetPlacement?: "aboveEditor" | "belowEditor" | string;
+  text?: string;
   expiresAt?: number;
   [key: string]: unknown;
 }

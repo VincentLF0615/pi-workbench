@@ -1,7 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import { readImage, validateImages } from "../lib/images";
-import type { Draft, ImageContent, PiModel, UiRequest } from "../lib/types";
+import type {
+  Draft,
+  ImageContent,
+  PiModel,
+  PiQueues,
+  UiRequest,
+} from "../lib/types";
 
 export function Composer({
   sessionId,
@@ -9,9 +15,13 @@ export function Composer({
   disabled = false,
   model,
   draft,
+  queues,
+  pendingMessageCount = 0,
+  stopping = false,
   onDraftChange,
   onSend,
   onSteer,
+  onFollowUp,
   onAbort,
 }: {
   sessionId: string | null;
@@ -19,9 +29,13 @@ export function Composer({
   disabled?: boolean;
   model?: PiModel | null;
   draft: Draft;
+  queues: PiQueues | null;
+  pendingMessageCount?: number;
+  stopping?: boolean;
   onDraftChange: (draft: Draft) => void;
   onSend: (text: string, images: ImageContent[]) => Promise<void>;
   onSteer: (text: string, images: ImageContent[]) => Promise<void>;
+  onFollowUp: (text: string, images: ImageContent[]) => Promise<void>;
   onAbort: () => void;
 }) {
   const [pending, setPending] = useState(false);
@@ -33,22 +47,12 @@ export function Composer({
     draftRef.current = next;
     onDraftChange(next);
   };
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && busy) {
-        event.preventDefault();
-        onAbort();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onAbort]);
-
-  const submit = async () => {
+  const submit = async (queueFollowUp = false) => {
     if (
       pending ||
       reading ||
       disabled ||
+      stopping ||
       !sessionId ||
       (!draft.text.trim() && !draft.images.length)
     )
@@ -64,7 +68,8 @@ export function Composer({
       }
       setPending(true);
       const content = { text: draft.text.trim(), images: draft.images };
-      await (busy ? onSteer : onSend)(content.text, content.images);
+      const action = busy ? (queueFollowUp ? onFollowUp : onSteer) : onSend;
+      await action(content.text, content.images);
       change({ text: "", images: [] });
     } catch (cause) {
       setError(String(cause));
@@ -74,7 +79,7 @@ export function Composer({
   };
 
   const attach = async (files: File[]) => {
-    if (pending || reading || disabled) return;
+    if (pending || reading || disabled || stopping) return;
     setReading(true);
     setError(null);
     try {
@@ -89,6 +94,14 @@ export function Composer({
     }
   };
 
+  const cannotSubmit =
+    !sessionId ||
+    disabled ||
+    pending ||
+    reading ||
+    stopping ||
+    (!draft.text.trim() && !draft.images.length);
+
   return (
     <div
       className="composer"
@@ -100,6 +113,7 @@ export function Composer({
         void attach(Array.from(event.dataTransfer.files));
       }}
     >
+      <QueueSummary queues={queues} pendingMessageCount={pendingMessageCount} />
       {draft.images.length > 0 && (
         <div className="composer-images">
           {draft.images.map((image, index) => (
@@ -142,7 +156,7 @@ export function Composer({
           }
           value={draft.text}
           rows={3}
-          disabled={!sessionId || disabled || pending}
+          disabled={!sessionId || disabled || pending || stopping}
           onChange={(event) => change({ ...draft, text: event.target.value })}
           onPaste={(event) => {
             const files = Array.from(event.clipboardData.files).filter((file) =>
@@ -165,35 +179,108 @@ export function Composer({
           }}
         />
         <div className="composer-actions">
-          <span className="composer-hint">
-            {reading
-              ? "正在读取图片…"
-              : busy
-                ? "pi 正在运行 · Esc 停止"
-                : "Enter 发送"}
-          </span>
-          {busy && (
-            <button type="button" className="btn ghost" onClick={onAbort}>
-              停止
+          <div className="composer-hint-row">
+            <span className="composer-hint">
+              {stopping
+                ? "正在停止并取回排队文字…"
+                : reading
+                  ? "正在读取图片…"
+                  : busy
+                    ? "Enter 追加指令 · Esc 停止"
+                    : "Enter 发送"}
+            </span>
+            {busy && (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={onAbort}
+                disabled={stopping}
+                title="清空队列，将排队文字取回输入框，并中断当前任务；排队图片需重新添加"
+              >
+                {stopping ? "停止中…" : "停止"}
+              </button>
+            )}
+          </div>
+          <div className="composer-submit-actions">
+            {busy && (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => void submit(true)}
+                disabled={cannotSubmit}
+                title="等当前任务及其工具调用全部结束后再处理这条消息"
+              >
+                稍后跟进
+              </button>
+            )}
+            <button
+              type="button"
+              className={`btn ${busy ? "secondary" : "primary"}`}
+              onClick={() => void submit()}
+              disabled={cannotSubmit}
+              title={
+                busy
+                  ? "当前响应和工具调用结束后、下一次模型请求前处理这条指令"
+                  : "发送消息"
+              }
+            >
+              {pending ? "提交中…" : busy ? "追加指令" : "发送"}
             </button>
-          )}
-          <button
-            type="button"
-            className={`btn ${busy ? "secondary" : "primary"}`}
-            onClick={() => void submit()}
-            disabled={
-              !sessionId ||
-              disabled ||
-              pending ||
-              reading ||
-              (!draft.text.trim() && !draft.images.length)
-            }
-          >
-            {pending ? "提交中…" : busy ? "追加指令" : "发送"}
-          </button>
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function QueueSummary({
+  queues,
+  pendingMessageCount,
+}: {
+  queues: PiQueues | null;
+  pendingMessageCount: number;
+}) {
+  const count = queues
+    ? queues.steering.length + queues.followUp.length
+    : Math.max(0, pendingMessageCount);
+  if (count === 0) return null;
+
+  return (
+    <details className="queue-summary">
+      <summary>
+        <span>排队消息 · {count}</span>
+        <span className="queue-summary-hint">
+          {queues ? "展开查看" : "等待队列详情"}
+        </span>
+      </summary>
+      {queues ? (
+        <div className="queue-groups">
+          <QueueGroup title="追加指令" items={queues.steering} />
+          <QueueGroup title="稍后跟进" items={queues.followUp} />
+        </div>
+      ) : (
+        <p className="queue-unknown">
+          Pi 尚未提供排队文本；停止时仍会尝试取回。
+        </p>
+      )}
+      <p className="queue-note">停止会取回排队文字；排队图片需重新添加。</p>
+    </details>
+  );
+}
+
+function QueueGroup({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="queue-group">
+      <h3>{title}</h3>
+      <ol>
+        {items.map((text, index) => (
+          <li key={`${index}:${text}`}>
+            <div className="queue-text">{text}</div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
