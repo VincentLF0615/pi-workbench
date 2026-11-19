@@ -1,5 +1,7 @@
 # pi Workbench
 
+> 作者：[LuoFeng (VincentLF0615)](https://github.com/VincentLF0615) · MIT License
+
 用 Rust + Tauri 2 给 [pi coding agent](https://github.com/earendil-works/pi) 写一个桌面工作台（Windows 优先）。
 
 本项目**不重写 agent**：界面通过 pi 官方 RPC 模式驱动 `pi`，模型、扩展、技能、登录态、会话文件全部复用终端里的那一套。

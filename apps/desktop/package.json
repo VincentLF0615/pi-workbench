@@ -2,6 +2,7 @@
   "name": "pi-workbench-desktop",
   "private": true,
   "version": "0.1.0",
+  "author": "LuoFeng (VincentLF0615) <2721951388@qq.com>",
   "type": "module",
   "scripts": {
     "dev": "vite",

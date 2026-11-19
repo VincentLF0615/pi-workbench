@@ -2,7 +2,7 @@
 name = "pi-workbench"
 version = "0.1.0"
 description = "Desktop workbench for the pi coding agent"
-authors = ["LuoFeng"]
+authors = ["LuoFeng <2721951388@qq.com>"]
 edition = "2024"
 
 [lib]

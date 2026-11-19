@@ -5,6 +5,7 @@ exclude = ["scratch"]
 
 [workspace.package]
 version = "0.1.0"
+authors = ["LuoFeng <2721951388@qq.com>"]
 edition = "2021"
 license = "MIT"
 
