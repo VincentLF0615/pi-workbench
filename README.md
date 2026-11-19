@@ -2,7 +2,9 @@
 
 用 Rust + Tauri 2 给 [pi coding agent](https://github.com/earendil-works/pi) 写一个桌面工作台（Windows 优先）。
 
-本项目**不重写 agent**：界面通过 pi 官方 RPC 模式驱动本机已安装的 `pi`，模型、扩展、技能、登录态、会话文件全部复用终端里的那一套。
+本项目**不重写 agent**：界面通过 pi 官方 RPC 模式驱动 `pi`，模型、扩展、技能、登录态、会话文件全部复用终端里的那一套。
+
+**致谢**：本项目的存在完全建立在 [earendil-works/pi](https://github.com/earendil-works/pi)（MIT License，© 2025 Mario Zechner）之上——它是一个极简、可扩展的 agent harness，RPC 协议设计得干净漂亮，才有了这个桌面壳。安装包内附一份 pi（见下方「内置 pi」），其 MIT 许可证原文随包分发（`vendor-pi/LICENSE`，另存于 `docs/third-party/pi-agent-LICENSE.txt`）。
 
 ```
 ┌────────────────────────── React 前端 ──────────────────────────┐
@@ -121,7 +123,7 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
 
 ## M4 打包与打磨
 
-- **应用图标**：`tools/make-icons.py` 用 Pillow 绘制原创设计（深色圆角方 + 三色开口圆环 + 白色 π 字形，4 倍超采样后缩小），配色致敬 Pi 公开品牌形象，构图不复现官方标志；产出 Tauri 与 Windows Store 需要的全部尺寸，含多尺寸 `.ico` 与 `.icns`
+- **应用图标**：原创「折纸 π」设计（深紫底 + 彩虹渐变屋顶横杠 + 紫/青双腿，源稿见 `docs/icon-reference/`），`tools/make-icons.py` 从源稿裁切母本并重采样出 Tauri 与 Windows Store 需要的全部尺寸，含多尺寸 `.ico` 与 `.icns`
 - **单实例**：`tauri-plugin-single-instance`；第二次启动自动退出并把参数转交给已运行的实例，同时 `show` + `unminimize` + `set_focus` 把窗口带到前台
 - **命令行参数**：
   ```text
@@ -132,6 +134,7 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
   未知参数被忽略，`--help` / `--version` 不触发打开行为
 - **启动恢复**：`%APPDATA%\pi-workbench\settings.json` 记录 `last_project` 与 `open_sessions`；启动时优先命令行意图，否则重开上次的会话。关闭标签会同步移除记录
 - **pi 版本兼容**：解析 `pi --version`，与测试版本 `1.5.x` 比较；主版本不同或次版本更新时在顶部横幅提示
+- **内置 pi**：安装包附带一份 [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)（MIT），没有本机 pi 的用户开箱即用。查找顺序：显式路径 → `PI_EXECUTABLE` → 本机托管安装（`~/.pi/agent`，升级优先）→ 安装包内置副本 → PATH。内置副本由 `tools\vendor-pi.ps1` 从 npm registry 拉取（`--ignore-scripts`，与官方安装流程一致），MIT 许可证原文随包分发
 - **打包**：`tools\bundle.ps1` 产出 NSIS（当前用户安装，含简体中文）与 MSI
 
 ## 关键设计

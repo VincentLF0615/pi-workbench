@@ -27,7 +27,7 @@
 保留深底蓝色 π 的方向，改成无字体依赖、无阴影的统一轮廓。
 `tools/make-icons.py` 同时生成界面品牌图、平台图片及七档尺寸 ICO。
 
-Windows 快捷方式使用独立资源 `icons/pi-workbench-ring-v1.ico`，
+Windows 快捷方式使用独立资源 `icons/pi-workbench-iso-v2.ico`，
 避免继续命中旧 EXE 路径下的模糊图标缓存。
 资源随安装包分发，NSIS 安装钩子会更新现有桌面和开始菜单快捷方式的图标。
 

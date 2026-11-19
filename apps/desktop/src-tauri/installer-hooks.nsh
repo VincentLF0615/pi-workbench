@@ -2,9 +2,9 @@
 ; low-resolution icon cached under the executable's unchanged path.
 !macro NSIS_HOOK_POSTINSTALL
   IfFileExists "$DESKTOP\${PRODUCTNAME}.lnk" 0 +2
-    CreateShortCut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-ring-v1.ico" 0
+    CreateShortCut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-iso-v1.ico" 0
   IfFileExists "$SMPROGRAMS\${PRODUCTNAME}.lnk" 0 +2
-    CreateShortCut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-ring-v1.ico" 0
+    CreateShortCut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-iso-v1.ico" 0
   IfFileExists "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" 0 +2
-    CreateShortCut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-ring-v1.ico" 0
+    CreateShortCut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\icons\pi-workbench-iso-v1.ico" 0
 !macroend

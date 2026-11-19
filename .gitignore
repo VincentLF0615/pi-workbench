@@ -23,6 +23,10 @@ fixtures/*.jsonl
 # Local icon design scratch (not part of the source)
 scratch-icon-preview.html
 
+# Vendored pi agent (86 MB; fetched by tools/vendor-pi.ps1, shipped in
+# installer resources instead of bloating the git repo)
+apps/desktop/src-tauri/vendor-pi/
+
 
 # Generated Tauri schemas and verification data
 apps/desktop/src-tauri/gen/

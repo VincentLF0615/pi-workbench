@@ -30,8 +30,9 @@
       "msi"
     ],
     "resources": [
-      "icons/pi-workbench-ring-v1.ico",
-      "branding-notice.txt"
+      "icons/pi-workbench-iso-v2.ico",
+      "branding-notice.txt",
+      "vendor-pi/"
     ],
     "icon": [
       "icons/32x32.png",

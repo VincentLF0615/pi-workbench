@@ -6,9 +6,11 @@
 //! 2. `PI_EXECUTABLE`;
 //! 3. the managed install at `%USERPROFILE%\.pi\agent\bin\pi-launcher.js`,
 //!    launched through `node` so upgrades are picked up automatically;
-//! 4. `pi.exe` on `PATH`;
-//! 5. `pi.cmd` on `PATH`, run through `cmd /C`;
-//! 6. the npm global shim.
+//! 4. the pi bundled with this app's installer (`vendor-pi/package`),
+//!    launched through `node`;
+//! 5. `pi.exe` on `PATH`;
+//! 6. `pi.cmd` on `PATH`, run through `cmd /C`;
+//! 7. the npm global shim.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -74,6 +76,10 @@ pub fn discover(explicit: Option<&Path>) -> Result<LaunchSpec> {
         }
     }
 
+    if let Some(spec) = bundled_install() {
+        return Ok(spec);
+    }
+
     if let Some(path) = which(&["pi.exe"]) {
         return Ok(LaunchSpec {
             kind: LaunchKind::Executable(path.clone()),
@@ -134,6 +140,46 @@ fn agent_dir() -> Option<PathBuf> {
         .map(PathBuf::from)?;
     let agent = home.join(".pi").join("agent");
     agent.is_dir().then_some(agent)
+}
+
+/// The pi copy bundled with this app's installer. Tauri places bundle
+/// resources next to the executable on Windows, so look for
+/// `<exe_dir>/vendor-pi/package/dist/bundle/cli.js` (and the dev-time
+/// `src-tauri/vendor-pi` layout as a fallback).
+fn bundled_install() -> Option<LaunchSpec> {
+    let node = resolve_node()?;
+    for base in resource_bases() {
+        let cli = base
+            .join("vendor-pi")
+            .join("package")
+            .join("dist")
+            .join("bundle")
+            .join("cli.js");
+        if cli.is_file() {
+            return Some(LaunchSpec {
+                kind: LaunchKind::NodeLauncher {
+                    node,
+                    launcher: cli,
+                },
+                source: format!("bundled ({})", base.display()),
+            });
+        }
+    }
+    None
+}
+
+/// Candidate directories that may hold the bundled resources: the
+/// executable's own directory first (installed layout), then the crate
+/// directory (dev layout).
+fn resource_bases() -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            bases.push(dir.to_path_buf());
+        }
+    }
+    bases.push(std::path::PathBuf::from("."));
+    bases
 }
 
 fn resolve_node() -> Option<PathBuf> {
