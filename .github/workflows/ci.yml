@@ -16,6 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # tauri.conf.json bundles vendor-pi/ as a resource; the directory is
+      # gitignored, so materialize it from npm before building.
+      - name: Set up Node.js for vendor-pi
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Vendor the bundled pi agent
+        shell: pwsh
+        run: tools/vendor-pi.ps1
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
