@@ -4,6 +4,7 @@ description = "Client for the pi coding agent RPC mode (JSONL over stdin/stdout)
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [dependencies]
 serde.workspace = true

@@ -4,6 +4,7 @@ description = "Command line probe for the pi RPC protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "pi-probe"
