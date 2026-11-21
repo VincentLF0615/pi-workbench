@@ -719,12 +719,14 @@ body.resizing-cols * {
 
 /* ---------- unified modern composer card ---------- */
 .composer {
-  padding: 10px max(22px, calc((100% - 860px) / 2)) 14px;
+  flex: none;
+  padding: 10px max(24px, calc((100% - 820px) / 2)) 14px;
   border: 0;
   background: var(--bg);
 }
 
 .composer-card {
+  container-type: inline-size;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--bg-elevated);
@@ -781,38 +783,56 @@ body.resizing-cols * {
 
 .composer-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 6px 10px 8px;
   border-top: 1px solid var(--border-subtle);
 }
 
-.composer-bar-left,
-.composer-bar-right {
+.composer-bar-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  flex: 1 1 160px;
   min-width: 0;
 }
 
 .composer-bar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
   flex: none;
+  margin-left: auto;
+  max-width: 100%;
 }
 
 .composer-footer {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   padding: 0;
+}
+
+.composer-footer .model-picker {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .composer-footer .model-button {
   min-height: 30px;
+  min-width: 0;
+  max-width: min(260px, 100%);
   padding: 4px 9px;
   gap: 6px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: var(--bg-raised);
-  max-width: 290px;
+  overflow: hidden;
 }
 
 .composer-footer .model-button:hover:not(:disabled) {
@@ -821,6 +841,7 @@ body.resizing-cols * {
 }
 
 .composer-tool-btn {
+  flex: none;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -850,7 +871,7 @@ body.resizing-cols * {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 5px 12px;
+  padding: 5px 11px;
   border-radius: 9px;
   font-size: 12.5px;
   min-height: 30px;
@@ -868,6 +889,26 @@ body.resizing-cols * {
 .composer-hint {
   font-size: 11px;
   white-space: nowrap;
+}
+
+@container (max-width: 680px) {
+  .composer-hint {
+    display: none;
+  }
+  .composer-footer .model-trigger-label {
+    display: none;
+  }
+}
+
+@container (max-width: 480px) {
+  .composer-footer .model-button {
+    max-width: 170px;
+  }
+  .composer-send-btn,
+  .composer-stop-btn {
+    padding: 5px 9px;
+    font-size: 12px;
+  }
 }
 
 .queue-summary {
@@ -1105,6 +1146,7 @@ body.resizing-cols * {
 /* ---------- right dock, diff colors & preview line numbers ---------- */
 .dock {
   width: 320px;
+  max-width: min(620px, 44%);
   background: var(--bg-raised);
   border-left: 1px solid var(--border);
 }
@@ -1833,10 +1875,7 @@ body.resizing-cols * {
     padding: 20px 16px;
   }
   .composer {
-    padding: 8px 14px 12px;
-  }
-  .composer-hint {
-    display: none;
+    padding: 8px 16px 12px;
   }
   .welcome-recent-grid {
     grid-template-columns: 1fr;

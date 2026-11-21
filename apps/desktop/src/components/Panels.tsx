@@ -578,7 +578,7 @@ export function SettingsDialog({
             <img src={piMark} alt="Pi Workbench 图标" />
             <div>
               <h3>
-                Pi Workbench <span className="about-version">v0.1.2</span>
+                Pi Workbench <span className="about-version">v0.1.3</span>
               </h3>
               <p>
                 纯原生 Pi RPC 桌面工作台，零额外提示词注入，复用本机 Pi

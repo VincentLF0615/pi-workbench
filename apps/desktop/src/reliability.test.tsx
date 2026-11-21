@@ -1084,8 +1084,10 @@ describe("Markdown actions", () => {
     render(<Markdown text={"```rust\nfn main() {}\n```"} />);
     fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("fn main() {}"));
-    expect(screen.getByRole("button", { name: "复制代码" }).textContent).toBe(
-      "已复制",
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "复制代码" }).textContent).toBe(
+        "已复制",
+      ),
     );
   });
 
@@ -1801,5 +1803,16 @@ describe("v0.1.2 workbench polish", () => {
     expect(document.querySelector(".sidebar")).toBeNull();
     fireEvent.keyDown(window, { key: "\\", ctrlKey: true });
     expect(document.querySelector(".sidebar")).not.toBeNull();
+  });
+
+  it("keeps the composer inside the center column aligned with the transcript", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    render(<App />);
+    await screen.findByLabelText("消息");
+    expect(document.querySelector(".body-main .composer")).not.toBeNull();
+    expect(document.querySelector(".body > .dock")).not.toBeNull();
   });
 });

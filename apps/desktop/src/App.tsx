@@ -564,6 +564,35 @@ export default function App() {
                     store.answerUi(requestId, reply)
                   }
                 />
+                <Composer
+                  key={active.info.id}
+                  sessionId={active.info.id}
+                  busy={active.busy}
+                  disabled={active.info.closed || !active.state}
+                  model={active.state?.model}
+                  draft={active.draft}
+                  queues={active.queues}
+                  pendingMessageCount={active.state?.pendingMessageCount}
+                  stopping={active.stopping}
+                  onOpenCommands={openPalette}
+                  onDraftChange={(draft) =>
+                    store.setDraft(active.info.id, draft)
+                  }
+                  onSend={store.send}
+                  onSteer={store.steer}
+                  onFollowUp={store.followUp}
+                  onAbort={() => void store.abort()}
+                  footer={
+                    <ModelPicker
+                      sessionId={active.info.id}
+                      busy={active.busy}
+                      disabled={active.info.closed || !active.state}
+                      model={active.state?.model}
+                      thinkingLevel={active.state?.thinkingLevel}
+                      onApply={store.configureModel}
+                    />
+                  }
+                />
               </div>
               {dockOpen && (
                 <>
@@ -592,34 +621,6 @@ export default function App() {
                 </>
               )}
             </div>
-
-            <Composer
-              key={active.info.id}
-              sessionId={active.info.id}
-              busy={active.busy}
-              disabled={active.info.closed || !active.state}
-              model={active.state?.model}
-              draft={active.draft}
-              queues={active.queues}
-              pendingMessageCount={active.state?.pendingMessageCount}
-              stopping={active.stopping}
-              onOpenCommands={openPalette}
-              onDraftChange={(draft) => store.setDraft(active.info.id, draft)}
-              onSend={store.send}
-              onSteer={store.steer}
-              onFollowUp={store.followUp}
-              onAbort={() => void store.abort()}
-              footer={
-                <ModelPicker
-                  sessionId={active.info.id}
-                  busy={active.busy}
-                  disabled={active.info.closed || !active.state}
-                  model={active.state?.model}
-                  thinkingLevel={active.state?.thinkingLevel}
-                  onApply={store.configureModel}
-                />
-              }
-            />
 
             {active.stats?.totalTokens != null && (
               <footer

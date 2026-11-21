@@ -4,7 +4,7 @@ members = ["crates/pi-rpc", "apps/pi-probe", "apps/desktop/src-tauri"]
 exclude = ["scratch"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 authors = ["LuoFeng <2721951388@qq.com>"]
 edition = "2021"
 license = "MIT"

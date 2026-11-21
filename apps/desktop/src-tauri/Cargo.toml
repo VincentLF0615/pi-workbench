@@ -1,6 +1,6 @@
 [package]
 name = "pi-workbench"
-version = "0.1.2"
+version = "0.1.3"
 description = "Desktop workbench for the pi coding agent"
 authors = ["LuoFeng <2721951388@qq.com>"]
 edition = "2024"
