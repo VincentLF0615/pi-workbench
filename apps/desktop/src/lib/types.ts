@@ -444,10 +444,11 @@ export interface SlashCommand {
 
 /** The app's own settings (never pi's). */
 export interface Settings {
-  theme: "system" | "light" | "dark";
+  theme: "system" | "light" | "parchment" | "dark";
   fontSize: number;
   fontFamily: string;
   sidebarWidth: number;
+  dockWidth?: number;
   lastProject: string | null;
   openSessions: string[];
   expandTools: boolean;

@@ -2618,7 +2618,7 @@ dependencies = [
 
 [[package]]
 name = "pi-probe"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "pi-rpc",
  "serde_json",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "pi-rpc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "pi-workbench"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "pi-rpc",
  "serde",

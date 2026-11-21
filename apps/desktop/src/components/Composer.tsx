@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { readImage, validateImages } from "../lib/images";
 import type {
@@ -8,6 +8,7 @@ import type {
   PiQueues,
   UiRequest,
 } from "../lib/types";
+import { IconImage, IconSend, IconSlash, IconStop } from "./Icons";
 
 export function Composer({
   sessionId,
@@ -19,6 +20,7 @@ export function Composer({
   pendingMessageCount = 0,
   stopping = false,
   footer = null,
+  onOpenCommands,
   onDraftChange,
   onSend,
   onSteer,
@@ -33,8 +35,9 @@ export function Composer({
   queues: PiQueues | null;
   pendingMessageCount?: number;
   stopping?: boolean;
-  /** Extra controls rendered at the composer's bottom-right (model picker). */
+  /** Extra controls rendered inside the composer's bottom-left bar (model picker). */
   footer?: React.ReactNode;
+  onOpenCommands?: () => void;
   onDraftChange: (draft: Draft) => void;
   onSend: (text: string, images: ImageContent[]) => Promise<void>;
   onSteer: (text: string, images: ImageContent[]) => Promise<void>;
@@ -43,9 +46,21 @@ export function Composer({
 }) {
   const [pending, setPending] = useState(false);
   const [reading, setReading] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const draftRef = useRef(draft);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   draftRef.current = draft;
+
+  // Auto-grow the textarea smoothly with content up to 220px.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 48), 220)}px`;
+  }, [draft.text]);
+
   const change = (next: Draft) => {
     draftRef.current = next;
     onDraftChange(next);
@@ -82,7 +97,7 @@ export function Composer({
   };
 
   const attach = async (files: File[]) => {
-    if (pending || reading || disabled || stopping) return;
+    if (!files.length || pending || reading || disabled || stopping) return;
     setReading(true);
     setError(null);
     try {
@@ -105,106 +120,154 @@ export function Composer({
     stopping ||
     (!draft.text.trim() && !draft.images.length);
 
+  const inputDisabled = !sessionId || disabled || pending || stopping;
+
   return (
     <div
-      className="composer"
+      className={`composer ${dragging ? "dragging" : ""}`}
       onDragOver={(event) => {
         event.preventDefault();
+        if (!dragging) setDragging(true);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDragging(false);
+        }
       }}
       onDrop={(event) => {
         event.preventDefault();
+        setDragging(false);
         void attach(Array.from(event.dataTransfer.files));
       }}
     >
       <QueueSummary queues={queues} pendingMessageCount={pendingMessageCount} />
-      {draft.images.length > 0 && (
-        <div className="composer-images">
-          {draft.images.map((image, index) => (
-            <div key={index} className="composer-image">
-              <img
-                src={`data:${image.mimeType};base64,${image.data}`}
-                alt={`attachment ${index + 1}`}
-              />
+      <div className="composer-card">
+        {draft.images.length > 0 && (
+          <div className="composer-images">
+            {draft.images.map((image, index) => (
+              <div key={index} className="composer-image">
+                <img
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={`attachment ${index + 1}`}
+                />
+                <button
+                  type="button"
+                  className="composer-image-remove"
+                  disabled={pending || reading}
+                  aria-label="remove image"
+                  onClick={() =>
+                    change({
+                      ...draft,
+                      images: draft.images.filter((_, i) => i !== index),
+                    })
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {error && (
+          <div role="alert" className="row-error composer-error">
+            {error}
+          </div>
+        )}
+        <div className="composer-main">
+          <textarea
+            ref={textareaRef}
+            className="composer-input"
+            aria-label="消息"
+            placeholder={
+              sessionId
+                ? "输入消息，Enter 发送，Shift+Enter 换行（可粘贴或拖入图片）"
+                : "先打开一个会话"
+            }
+            value={draft.text}
+            rows={2}
+            disabled={inputDisabled}
+            onChange={(event) => change({ ...draft, text: event.target.value })}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files).filter(
+                (file) => file.type.startsWith("image/"),
+              );
+              if (files.length) {
+                event.preventDefault();
+                void attach(files);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+          />
+        </div>
+        <div className="composer-bar">
+          <div className="composer-bar-left">
+            {footer && <div className="composer-footer">{footer}</div>}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              hidden
+              onChange={(event) => {
+                const picked = Array.from(event.target.files ?? []);
+                event.target.value = "";
+                if (picked.length) void attach(picked);
+              }}
+            />
+            <button
+              type="button"
+              className="composer-tool-btn"
+              aria-label="添加图片"
+              title="添加图片（PNG / JPEG / WebP / GIF）"
+              disabled={inputDisabled || reading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <IconImage size={15} />
+            </button>
+            {onOpenCommands && (
               <button
                 type="button"
-                className="composer-image-remove"
-                disabled={pending || reading}
-                aria-label="remove image"
-                onClick={() =>
-                  change({
-                    ...draft,
-                    images: draft.images.filter((_, i) => i !== index),
-                  })
-                }
+                className="composer-tool-btn"
+                aria-label="打开斜杠命令"
+                title="命令面板（Ctrl+K）"
+                disabled={!sessionId || disabled}
+                onClick={onOpenCommands}
               >
-                ×
+                <IconSlash size={15} />
               </button>
-            </div>
-          ))}
-        </div>
-      )}
-      {error && (
-        <div role="alert" className="row-error">
-          {error}
-        </div>
-      )}
-      <div className="composer-main">
-        <textarea
-          className="composer-input"
-          aria-label="消息"
-          placeholder={
-            sessionId
-              ? "输入消息，Enter 发送，Shift+Enter 换行"
-              : "先打开一个会话"
-          }
-          value={draft.text}
-          rows={3}
-          disabled={!sessionId || disabled || pending || stopping}
-          onChange={(event) => change({ ...draft, text: event.target.value })}
-          onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files).filter((file) =>
-              file.type.startsWith("image/"),
-            );
-            if (files.length) {
-              event.preventDefault();
-              void attach(files);
-            }
-          }}
-          onKeyDown={(event) => {
-            if (
-              event.key === "Enter" &&
-              !event.shiftKey &&
-              !event.nativeEvent.isComposing
-            ) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <div className="composer-actions">
-          <div className="composer-hint-row">
+            )}
+          </div>
+          <div className="composer-bar-right">
             <span className="composer-hint">
               {stopping
                 ? "正在停止并取回排队文字…"
                 : reading
                   ? "正在读取图片…"
                   : busy
-                    ? "Enter 追加指令 · Esc 停止"
+                    ? "Enter 追加 · Esc 停止"
                     : "Enter 发送"}
             </span>
             {busy && (
               <button
                 type="button"
-                className="btn ghost"
+                className="btn ghost composer-stop-btn"
                 onClick={onAbort}
                 disabled={stopping}
                 title="清空队列，将排队文字取回输入框，并中断当前任务；排队图片需重新添加"
               >
+                <IconStop size={12} />
                 {stopping ? "停止中…" : "停止"}
               </button>
             )}
-          </div>
-          <div className="composer-submit-actions">
             {busy && (
               <button
                 type="button"
@@ -218,7 +281,7 @@ export function Composer({
             )}
             <button
               type="button"
-              className={`btn ${busy ? "secondary" : "primary"}`}
+              className={`btn composer-send-btn ${busy ? "secondary" : "primary"}`}
               onClick={() => void submit()}
               disabled={cannotSubmit}
               title={
@@ -227,12 +290,12 @@ export function Composer({
                   : "发送消息"
               }
             >
+              <IconSend size={13} />
               {pending ? "提交中…" : busy ? "追加指令" : "发送"}
             </button>
           </div>
         </div>
       </div>
-      {footer && <div className="composer-footer">{footer}</div>}
     </div>
   );
 }

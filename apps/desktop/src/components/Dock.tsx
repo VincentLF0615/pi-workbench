@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import type { FileNode, GitFile, GitStatus, TextFile } from "../lib/types";
+import {
+  IconCheck,
+  IconCopy,
+  IconExternal,
+  IconRefresh,
+  IconWrap,
+} from "./Icons";
 
 /** Which panel the right dock is showing. */
 export type DockTab = "files" | "changes" | "preview" | "logs";
@@ -22,6 +30,8 @@ export function Dock({
   onReveal,
   previewRequest,
   widgets,
+  width,
+  refreshTick = 0,
 }: {
   projectDir: string | null;
   sessionId: string | null;
@@ -30,6 +40,8 @@ export function Dock({
   onReveal: (path: string) => void;
   previewRequest: PreviewRequest | null;
   widgets: Record<string, string[]>;
+  width?: number;
+  refreshTick?: number;
 }) {
   const [git, setGit] = useState<GitStatus | null>(null);
   const [files, setFiles] = useState<FileNode[] | null>(null);
@@ -63,17 +75,36 @@ export function Dock({
     void load(tab);
   }, [load, tab]);
 
+  // Refresh git badge passively after turns settle so the count stays accurate.
+  useEffect(() => {
+    if (!projectDir || refreshTick === 0) return;
+    let alive = true;
+    void api
+      .gitStatus(projectDir)
+      .then((status) => {
+        if (alive) setGit(status);
+      })
+      .catch(() => {
+        // Non-repo or transient git error is ignored during background refresh.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectDir, refreshTick]);
+
   const counts = useMemo(() => {
     const changed = git?.files.length ?? 0;
     return { changed };
   }, [git]);
 
   return (
-    <aside className="dock">
+    <aside className="dock" style={width ? { width } : undefined}>
       <div className="dock-tabs">
         <DockButton
           active={tab === "files"}
           onClick={() => onTab("files")}
+          onClickReload={tab === "files" ? () => void load("files") : undefined}
+          reloadLabel="刷新文件"
           title="项目文件"
         >
           文件
@@ -81,6 +112,10 @@ export function Dock({
         <DockButton
           active={tab === "changes"}
           onClick={() => onTab("changes")}
+          onClickReload={
+            tab === "changes" ? () => void load("changes") : undefined
+          }
+          reloadLabel="刷新改动"
           title="Git 改动"
           badge={counts.changed || undefined}
         >
@@ -97,6 +132,7 @@ export function Dock({
           active={tab === "logs"}
           onClick={() => onTab("logs")}
           onClickReload={() => void load("logs")}
+          reloadLabel="刷新日志"
           title="pi 日志"
         >
           日志
@@ -149,6 +185,7 @@ function DockButton({
   active,
   onClick,
   onClickReload,
+  reloadLabel = "刷新当前面板",
   badge,
   title,
   children,
@@ -156,6 +193,7 @@ function DockButton({
   active: boolean;
   onClick: () => void;
   onClickReload?: () => void;
+  reloadLabel?: string;
   badge?: number;
   title: string;
   children: React.ReactNode;
@@ -178,9 +216,10 @@ function DockButton({
           type="button"
           className="dock-reload"
           onClick={onClickReload}
-          title="刷新"
+          title={reloadLabel}
+          aria-label={reloadLabel}
         >
-          ⟳
+          <IconRefresh size={12} />
         </button>
       )}
     </div>
@@ -262,6 +301,21 @@ export function FileTree({
   );
 }
 
+function diffLineClass(line: string): string {
+  if (line.startsWith("@@")) return "diff-line diff-hunk";
+  if (
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ")
+  ) {
+    return "diff-line diff-meta";
+  }
+  if (line.startsWith("+")) return "diff-line diff-add";
+  if (line.startsWith("-")) return "diff-line diff-del";
+  return "diff-line";
+}
+
 /** Git changes panel. */
 export function ChangesPanel({
   git,
@@ -292,6 +346,9 @@ export function ChangesPanel({
     }
   };
 
+  const diffLines =
+    diff !== null ? diff.replace(/\r\n/g, "\n").split("\n") : null;
+
   return (
     <div className="changes">
       <div className="changes-head">
@@ -320,18 +377,56 @@ export function ChangesPanel({
       </div>
       {selected && (
         <div className="changes-diff">
-          <div className="changes-diff-head">{selected}</div>
-          <pre>{diff ?? "加载中…"}</pre>
+          <div className="changes-diff-head">
+            <span className="truncate" title={selected}>
+              {selected}
+            </span>
+            <button
+              type="button"
+              className="dock-icon-btn"
+              title="在预览中打开"
+              aria-label="在预览中打开"
+              onClick={() => onOpen(selected)}
+            >
+              <IconExternal size={12} />
+            </button>
+          </div>
+          {diffLines === null ? (
+            <div className="dock-empty">加载中…</div>
+          ) : diff === "" ? (
+            <div className="dock-empty">没有未暂存文本差异</div>
+          ) : (
+            <pre className="diff-view">
+              {diffLines.map((line, index) => (
+                <span key={index} className={diffLineClass(line)}>
+                  {line || " "}
+                  {"\n"}
+                </span>
+              ))}
+            </pre>
+          )}
         </div>
       )}
     </div>
   );
 }
+
+async function revealInExplorer(path: string) {
+  try {
+    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+    await revealItemInDir(path);
+  } catch {
+    // Opener plugin unavailable in test/browser environments.
+  }
+}
+
 /** File preview pane. */
 export function PreviewPane({ request }: { request: PreviewRequest | null }) {
   const [file, setFile] = useState<TextFile | null>(null);
   const [language, setLanguage] = useState<string>("text");
   const [error, setError] = useState<string | null>(null);
+  const [wrap, setWrap] = useState(false);
+  const [copied, setCopied] = useState(false);
   const path = request?.path ?? null;
 
   useEffect(() => {
@@ -343,6 +438,7 @@ export function PreviewPane({ request }: { request: PreviewRequest | null }) {
     let alive = true;
     setError(null);
     setFile(null);
+    setCopied(false);
     void Promise.all([
       api.readTextFile(request.path),
       api.fileLanguage(request.path),
@@ -360,11 +456,19 @@ export function PreviewPane({ request }: { request: PreviewRequest | null }) {
     };
   }, [request]);
 
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   if (!path) {
     return <div className="dock-empty">在文件树或工具卡片里选择文件</div>;
   }
   if (error) return <div className="dock-error">{error}</div>;
   if (!file) return <div className="dock-empty">正在加载…</div>;
+
+  const lines = file.text.replace(/\r\n/g, "\n").split("\n");
 
   return (
     <div className="preview">
@@ -378,8 +482,53 @@ export function PreviewPane({ request }: { request: PreviewRequest | null }) {
             已截断（共 {(file.total_bytes / 1024).toFixed(0)} KB）
           </span>
         )}
+        <div className="preview-actions">
+          <button
+            type="button"
+            className={`dock-icon-btn ${wrap ? "active" : ""}`}
+            aria-pressed={wrap}
+            aria-label="自动换行"
+            title={wrap ? "关闭自动换行" : "开启自动换行"}
+            onClick={() => setWrap((current) => !current)}
+          >
+            <IconWrap size={13} />
+          </button>
+          <button
+            type="button"
+            className="dock-icon-btn"
+            aria-label="复制文件内容"
+            title={copied ? "已复制" : "复制文件内容"}
+            onClick={() => {
+              void copyText(file.text)
+                .then(() => setCopied(true))
+                .catch(() => {});
+            }}
+          >
+            {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+          </button>
+          <button
+            type="button"
+            className="dock-icon-btn"
+            aria-label="在资源管理器中显示"
+            title="在资源管理器中显示"
+            onClick={() => void revealInExplorer(file.path)}
+          >
+            <IconExternal size={13} />
+          </button>
+        </div>
       </div>
-      <pre className="preview-code">{file.text}</pre>
+      <div className={`preview-code ${wrap ? "wrap" : ""}`}>
+        <div className="preview-lines" role="region" aria-label="文件内容">
+          {lines.map((line, index) => (
+            <div key={index} className="preview-line">
+              <span className="preview-ln" aria-hidden="true">
+                {index + 1}
+              </span>
+              <span className="preview-text">{line || " "}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

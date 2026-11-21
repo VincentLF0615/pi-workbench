@@ -22,19 +22,63 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
+type ListItem = { text: string; depth: number };
+
+type TableAlign = "left" | "center" | "right";
+
 type Block =
   | { kind: "para"; lines: string[] }
   | { kind: "code"; lang: string; code: string }
-  | { kind: "list"; ordered: boolean; items: string[] }
+  | { kind: "list"; ordered: boolean; items: ListItem[] }
   | { kind: "quote"; lines: string[] }
   | { kind: "heading"; level: number; text: string }
+  | {
+      kind: "table";
+      headers: string[];
+      aligns: TableAlign[];
+      rows: string[][];
+    }
   | { kind: "rule" };
+
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  for (let i = 0; i < trimmed.length; i += 1) {
+    if (trimmed[i] === "\\" && trimmed[i + 1] === "|") {
+      current += "|";
+      i += 1;
+    } else if (trimmed[i] === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += trimmed[i];
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTableAligns(line: string): TableAlign[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|") && !/^:?-{3,}:?$/.test(trimmed)) return null;
+  const cells = splitTableRow(trimmed);
+  if (cells.length === 0) return null;
+  const aligns: TableAlign[] = [];
+  for (const cell of cells) {
+    if (!/^:?-{3,}:?$/.test(cell)) return null;
+    if (cell.startsWith(":") && cell.endsWith(":")) aligns.push("center");
+    else if (cell.endsWith(":")) aligns.push("right");
+    else aligns.push("left");
+  }
+  return aligns;
+}
 
 function splitBlocks(text: string): Block[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: Block[] = [];
   let paragraph: string[] = [];
-  let listItems: string[] = [];
+  let listItems: ListItem[] = [];
   let listOrdered = false;
   let quote: string[] = [];
   let index = 0;
@@ -80,6 +124,30 @@ function splitBlocks(text: string): Block[] {
       continue;
     }
 
+    // GFM table: header line with `|` followed by alignment separator line.
+    if (line.includes("|") && index < lines.length) {
+      const aligns = parseTableAligns(lines[index]);
+      const headers = splitTableRow(line);
+      if (aligns && headers.length >= 2 && aligns.length === headers.length) {
+        flushAll();
+        index += 1; // consume separator row
+        const rows: string[][] = [];
+        while (
+          index < lines.length &&
+          lines[index].trim() &&
+          lines[index].includes("|") &&
+          !lines[index].trim().startsWith("```")
+        ) {
+          const cells = splitTableRow(lines[index]);
+          while (cells.length < headers.length) cells.push("");
+          rows.push(cells.slice(0, headers.length));
+          index += 1;
+        }
+        blocks.push({ kind: "table", headers, aligns, rows });
+        continue;
+      }
+    }
+
     if (/^#{1,6}\s/.test(line.trim())) {
       flushAll();
       const level = line.trim().match(/^#+/)![0].length;
@@ -104,14 +172,17 @@ function splitBlocks(text: string): Block[] {
       continue;
     }
 
-    const bullet = line.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
+    const bullet = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
     if (bullet) {
       flushParagraph();
       flushQuote();
-      const ordered = /\d/.test(bullet[1]);
-      if (listItems.length && ordered !== listOrdered) flushList();
-      listOrdered = ordered;
-      listItems.push(bullet[2]);
+      const spaces = bullet[1].replace(/\t/g, "  ").length;
+      const depth = Math.min(3, Math.floor(spaces / 2));
+      const ordered = /\d/.test(bullet[2]);
+      if (listItems.length && ordered !== listOrdered && depth === 0)
+        flushList();
+      if (listItems.length === 0) listOrdered = ordered;
+      listItems.push({ text: bullet[3], depth });
       continue;
     }
 
@@ -132,32 +203,81 @@ function Block({ block }: { block: Block }) {
       const Tag = `h${Math.min(block.level, 6)}` as "h1";
       return <Tag className="md-heading">{inline(block.text)}</Tag>;
     }
-    case "list":
-      return block.ordered ? (
-        <ol className="md-list">
-          {block.items.map((item, index) => (
-            <li key={index}>{inline(item)}</li>
-          ))}
-        </ol>
-      ) : (
-        <ul className="md-list">
-          {block.items.map((item, index) => (
-            <li key={index}>{inline(item)}</li>
-          ))}
-        </ul>
+    case "table":
+      return (
+        <div className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>
+                {block.headers.map((header, cellIndex) => (
+                  <th
+                    key={cellIndex}
+                    style={{ textAlign: block.aligns[cellIndex] }}
+                  >
+                    {inline(header)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={cellIndex}
+                      style={{ textAlign: block.aligns[cellIndex] }}
+                    >
+                      {inline(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       );
+    case "list": {
+      const ListTag = block.ordered ? "ol" : "ul";
+      return (
+        <ListTag className="md-list">
+          {block.items.map((item, index) => (
+            <li
+              key={index}
+              className={
+                item.depth > 0 ? `md-list-depth-${item.depth}` : undefined
+              }
+            >
+              {inline(item.text)}
+            </li>
+          ))}
+        </ListTag>
+      );
+    }
     case "quote":
       return (
-        <blockquote className="md-quote">{block.lines.map(inline)}</blockquote>
+        <blockquote className="md-quote">
+          {block.lines.map((line, index) => (
+            <div key={index}>{inline(line)}</div>
+          ))}
+        </blockquote>
       );
     case "rule":
       return <hr className="md-rule" />;
     default:
-      return <p className="md-para">{block.lines.map(inline)}</p>;
+      return (
+        <p className="md-para">
+          {block.lines.map((line, index) => (
+            <span key={index}>
+              {index > 0 && <br />}
+              {inline(line)}
+            </span>
+          ))}
+        </p>
+      );
   }
 }
 
-/** Render inline code, bold and italic spans. */
+/** Render inline code, bold, italic, strikethrough and safe links. */
 function inline(text: string) {
   const parts = text.split(/(`[^`]+`)/g);
   return parts.map((part, index) => {
@@ -168,16 +288,21 @@ function inline(text: string) {
         </code>
       );
     }
-    const bold = part.split(/(\*\*[^*]+\*\*)/g);
-    return bold.map((chunk, chunkIndex) => {
+    const tokens = part.split(
+      /(\*\*[^*]+\*\*|~~[^~]+~~|\*(?!\s)[^*]+(?<!\s)\*)/g,
+    );
+    return tokens.map((chunk, chunkIndex) => {
+      const key = `${index}-${chunkIndex}`;
       if (chunk.startsWith("**") && chunk.endsWith("**") && chunk.length > 4) {
-        return (
-          <strong key={`${index}-${chunkIndex}`}>
-            {renderLinks(chunk.slice(2, -2))}
-          </strong>
-        );
+        return <strong key={key}>{renderLinks(chunk.slice(2, -2))}</strong>;
       }
-      return <span key={`${index}-${chunkIndex}`}>{renderLinks(chunk)}</span>;
+      if (chunk.startsWith("~~") && chunk.endsWith("~~") && chunk.length > 4) {
+        return <del key={key}>{renderLinks(chunk.slice(2, -2))}</del>;
+      }
+      if (chunk.startsWith("*") && chunk.endsWith("*") && chunk.length > 2) {
+        return <em key={key}>{renderLinks(chunk.slice(1, -1))}</em>;
+      }
+      return <span key={key}>{renderLinks(chunk)}</span>;
     });
   });
 }

@@ -169,13 +169,6 @@ export function CommandPalette({
     }
   }, [open]);
 
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setIndex(0);
-    }
-  }, [open]);
-
   const filtered = useMemo(() => {
     const list = commands ?? [];
     const needle = query.trim().toLowerCase();
@@ -372,7 +365,16 @@ export function ForkDialog({
 }
 
 function themeLabel(theme: string) {
-  return theme === "system" ? "跟随系统" : theme === "light" ? "亮色" : "暗色";
+  switch (theme) {
+    case "system":
+      return "跟随系统";
+    case "light":
+      return "亮色";
+    case "parchment":
+      return "羊皮纸";
+    default:
+      return "暗色";
+  }
 }
 
 /** Settings modal. */
@@ -380,6 +382,7 @@ export function SettingsDialog({
   open,
   settings,
   settingsPath,
+  piVersion,
   onChange,
   onClose,
 }: {
@@ -389,11 +392,13 @@ export function SettingsDialog({
     fontSize: number;
     fontFamily: string;
     sidebarWidth: number;
+    dockWidth?: number;
     expandTools: boolean;
     logLevel: string;
     minimizeToTray: boolean;
   };
   settingsPath: string | null;
+  piVersion?: string | null;
   onChange: (patch: Record<string, unknown>) => void;
   onClose: () => void;
 }) {
@@ -425,29 +430,34 @@ export function SettingsDialog({
           设置
         </div>
         <div className="modal-body settings-body">
-          <label className="setting-row">
+          <div className="setting-row">
             <span className="setting-label">主题</span>
-            <div className="setting-control">
-              {["system", "light", "dark"].map((theme) => (
+            <div className="setting-control theme-chips">
+              {["system", "light", "parchment", "dark"].map((theme) => (
                 <button
                   key={theme}
                   type="button"
-                  className={`level-chip ${settings.theme === theme ? "active" : ""}`}
+                  className={`level-chip theme-chip ${settings.theme === theme ? "active" : ""}`}
                   aria-label={themeLabel(theme)}
                   aria-pressed={settings.theme === theme}
                   onClick={() => onChange({ theme })}
                 >
+                  <span
+                    className={`theme-swatch swatch-${theme}`}
+                    aria-hidden="true"
+                  />
                   {themeLabel(theme)}
                 </button>
               ))}
             </div>
-          </label>
+          </div>
 
           <label className="setting-row">
             <span className="setting-label">字号</span>
             <div className="setting-control">
               <input
                 type="range"
+                className="range-input"
                 min={11}
                 max={20}
                 step={1}
@@ -479,6 +489,7 @@ export function SettingsDialog({
             <div className="setting-control">
               <input
                 type="range"
+                className="range-input"
                 min={220}
                 max={480}
                 step={10}
@@ -492,15 +503,38 @@ export function SettingsDialog({
           </label>
 
           <label className="setting-row">
-            <span className="setting-label">默认展开工具详情</span>
+            <span className="setting-label">右侧面板宽度</span>
             <div className="setting-control">
               <input
-                type="checkbox"
-                checked={settings.expandTools}
+                type="range"
+                className="range-input"
+                min={240}
+                max={620}
+                step={10}
+                value={settings.dockWidth ?? 320}
                 onChange={(event) =>
-                  onChange({ expandTools: event.target.checked })
+                  onChange({ dockWidth: Number(event.target.value) })
                 }
               />
+              <span className="setting-value">
+                {settings.dockWidth ?? 320}px
+              </span>
+            </div>
+          </label>
+
+          <label className="setting-row">
+            <span className="setting-label">默认展开工具详情</span>
+            <div className="setting-control">
+              <span className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.expandTools}
+                  onChange={(event) =>
+                    onChange({ expandTools: event.target.checked })
+                  }
+                />
+                <span className="toggle-track" aria-hidden="true" />
+              </span>
             </div>
           </label>
 
@@ -524,13 +558,16 @@ export function SettingsDialog({
           <label className="setting-row">
             <span className="setting-label">最小化到托盘</span>
             <div className="setting-control">
-              <input
-                type="checkbox"
-                checked={settings.minimizeToTray}
-                onChange={(event) =>
-                  onChange({ minimizeToTray: event.target.checked })
-                }
-              />
+              <span className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.minimizeToTray}
+                  onChange={(event) =>
+                    onChange({ minimizeToTray: event.target.checked })
+                  }
+                />
+                <span className="toggle-track" aria-hidden="true" />
+              </span>
             </div>
           </label>
           <p className="setting-note">
@@ -540,11 +577,18 @@ export function SettingsDialog({
           <section className="about-brand" aria-label="关于 Pi Workbench">
             <img src={piMark} alt="Pi Workbench 图标" />
             <div>
-              <h3>关于 Pi Workbench</h3>
+              <h3>
+                Pi Workbench <span className="about-version">v0.1.2</span>
+              </h3>
               <p>
-                个人使用的非官方 Pi 桌面客户端，未获 Pi / Earendil 官方背书。
+                纯原生 Pi RPC 桌面工作台，零额外提示词注入，复用本机 Pi
+                配置、模型与扩展。
+                {piVersion ? `当前已连接 Pi ${piVersion}。` : ""}
               </p>
-              <p>图标为本项目原创设计，配色致敬 Pi 公开品牌形象。</p>
+              <p>
+                个人使用的非官方桌面客户端，未获 Pi / Earendil
+                官方背书；图标为本项目原创设计。
+              </p>
             </div>
           </section>
 

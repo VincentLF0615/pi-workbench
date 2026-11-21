@@ -64,6 +64,8 @@ const mocks = vi.hoisted(() => ({
     listFiles: vi.fn(),
     readTextFile: vi.fn(),
     fileLanguage: vi.fn(),
+    gitStatus: vi.fn(),
+    gitDiff: vi.fn(),
     getSessionSnapshot: vi.fn(),
     sendPrompt: vi.fn(),
     steer: vi.fn(),
@@ -104,6 +106,7 @@ import App from "./App";
 import { Composer, ExtensionDialogs } from "./components/Composer";
 import { Transcript } from "./components/Transcript";
 import { Markdown, ThinkingBlockView } from "./components/Markdown";
+import { ChangesPanel, PreviewPane } from "./components/Dock";
 import { projectLabel } from "./components/Sidebar";
 import { applyEvent, deriveSessionTitle } from "./lib/transcript";
 import { useSessions } from "./lib/store";
@@ -181,6 +184,13 @@ beforeEach(() => {
     total_bytes: 20,
   }));
   mocks.api.fileLanguage.mockResolvedValue("rust");
+  mocks.api.gitStatus.mockResolvedValue({
+    is_repo: false,
+    branch: null,
+    files: [],
+    error: null,
+  });
+  mocks.api.gitDiff.mockResolvedValue("");
   mocks.api.getSessionSnapshot.mockResolvedValue(base);
   mocks.api.sendPrompt.mockResolvedValue({});
   mocks.api.steer.mockResolvedValue({});
@@ -1682,5 +1692,114 @@ describe("session completion details", () => {
     expect(
       screen.getAllByRole("button", { name: "关闭original的错误提示" }),
     ).toHaveLength(2);
+  });
+});
+
+describe("v0.1.2 workbench polish", () => {
+  it("supports selecting the parchment theme and applies data-theme", async () => {
+    render(<App />);
+    await screen.findByLabelText("开始新对话");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const parchment = await screen.findByRole("button", { name: "羊皮纸" });
+    fireEvent.click(parchment);
+    await waitFor(() =>
+      expect(document.documentElement.dataset.theme).toBe("parchment"),
+    );
+    expect(mocks.api.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ theme: "parchment" }),
+    );
+  });
+
+  it("renders GFM tables, italic, strikethrough and nested lists in Markdown", () => {
+    const md = [
+      "| 名称 | 数值 |",
+      "| :--- | ---: |",
+      "| *斜体* | ~~旧值~~ **新值** |",
+      "",
+      "- 一级项",
+      "  - 二级项",
+    ].join("\n");
+    const { container } = render(<Markdown text={md} />);
+    const table = container.querySelector("table.md-table");
+    expect(table).not.toBeNull();
+    expect(table?.querySelectorAll("thead th")).toHaveLength(2);
+    expect(table?.querySelector("em")?.textContent).toBe("斜体");
+    expect(table?.querySelector("del")?.textContent).toBe("旧值");
+    expect(table?.querySelector("strong")?.textContent).toBe("新值");
+    expect(container.querySelector(".md-list-depth-1")?.textContent).toBe(
+      "二级项",
+    );
+  });
+
+  it("colorizes git diff lines by hunk, meta, addition and deletion", async () => {
+    mocks.api.gitDiff.mockResolvedValueOnce(
+      [
+        "diff --git a/src/a.ts b/src/a.ts",
+        "@@ -1,2 +1,2 @@",
+        "-const oldVal = 1;",
+        "+const newVal = 2;",
+        " const same = 3;",
+      ].join("\n"),
+    );
+    const { container } = render(
+      <ChangesPanel
+        git={{
+          is_repo: true,
+          branch: "main",
+          files: [{ path: "src/a.ts", status: "M" }],
+          error: null,
+        }}
+        projectDir="C:/project"
+        onOpen={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("src/a.ts"));
+    await waitFor(() =>
+      expect(container.querySelector(".diff-add")?.textContent).toContain(
+        "+const newVal = 2;",
+      ),
+    );
+    expect(container.querySelector(".diff-del")?.textContent).toContain(
+      "-const oldVal = 1;",
+    );
+    expect(container.querySelector(".diff-hunk")?.textContent).toContain(
+      "@@ -1,2 +1,2 @@",
+    );
+    expect(container.querySelector(".diff-meta")?.textContent).toContain(
+      "diff --git",
+    );
+  });
+
+  it("shows line numbers and toggles word wrap in file preview", async () => {
+    mocks.api.readTextFile.mockResolvedValueOnce({
+      path: "C:/project/demo.ts",
+      text: "line one\nline two",
+      truncated: false,
+      total_bytes: 17,
+    });
+    mocks.api.fileLanguage.mockResolvedValueOnce("typescript");
+    const { container } = render(
+      <PreviewPane request={{ path: "C:/project/demo.ts", requestId: 1 }} />,
+    );
+    await screen.findByText("line one");
+    expect(container.querySelectorAll(".preview-ln")).toHaveLength(2);
+    const wrapBtn = screen.getByRole("button", { name: "自动换行" });
+    expect(container.querySelector(".preview-code.wrap")).toBeNull();
+    fireEvent.click(wrapBtn);
+    expect(container.querySelector(".preview-code.wrap")).not.toBeNull();
+  });
+
+  it("toggles sidebar visibility with button and Ctrl+Backslash", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    render(<App />);
+    await screen.findByLabelText("消息");
+    expect(document.querySelector(".sidebar")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
+    expect(document.querySelector(".sidebar")).toBeNull();
+    fireEvent.keyDown(window, { key: "\\", ctrlKey: true });
+    expect(document.querySelector(".sidebar")).not.toBeNull();
   });
 });

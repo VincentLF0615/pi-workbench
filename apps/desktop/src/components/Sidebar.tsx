@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import type { ProjectGroupInfo, SessionFileInfo } from "../lib/types";
 import type { SessionRuntime } from "../lib/store";
 import piMark from "../assets/pi-mark.png";
+import { IconFolder, IconPathInput, IconPlus, IconSearch } from "./Icons";
 
 /** A friendly project name: the path's last segment, falling back to the
  * whole path for drive roots like `E:\`. */
@@ -98,34 +99,44 @@ export function Sidebar({
       <div className="sidebar-top">
         <button
           type="button"
-          className="btn primary block"
+          className="btn primary block btn-icon-text"
           onClick={() => {
             if (newSessionProjectDir) onNewSession(newSessionProjectDir);
             else void chooseProject();
           }}
           disabled={picking}
         >
+          <IconPlus size={14} />
           新会话
         </button>
         <button
           type="button"
-          className="btn ghost block"
+          className="btn ghost block btn-icon-text"
           onClick={() => void chooseProject()}
           disabled={picking}
         >
+          <IconFolder size={14} />
           {picking ? "选择中…" : "打开项目…"}
         </button>
-      </div>
-      {!adding && (
         <button
           type="button"
-          className="link-button sidebar-manual"
-          onClick={revealProjectInput}
+          className={`btn ghost sidebar-manual-btn ${adding ? "active" : ""}`}
+          onClick={() => {
+            if (adding) {
+              setAdding(false);
+              setPickError(null);
+            } else {
+              revealProjectInput();
+            }
+          }}
           disabled={picking}
+          title="手动输入路径"
+          aria-label="手动输入路径"
+          aria-pressed={adding}
         >
-          手动输入路径
+          <IconPathInput size={14} />
         </button>
-      )}
+      </div>
 
       {adding && (
         <div className="sidebar-add">
@@ -145,6 +156,8 @@ export function Sidebar({
                 onOpen(newPath.trim());
                 setAdding(false);
                 setNewPath("");
+              } else if (event.key === "Escape") {
+                setAdding(false);
               }
             }}
             autoFocus
@@ -165,12 +178,25 @@ export function Sidebar({
         </div>
       )}
 
-      <input
-        className="input search"
-        placeholder="搜索会话…"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
+      <div className="sidebar-search-wrap">
+        <IconSearch size={13} className="sidebar-search-icon" />
+        <input
+          className="input search"
+          placeholder="搜索会话…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {query && (
+          <button
+            type="button"
+            className="sidebar-search-clear"
+            aria-label="清空搜索"
+            onClick={() => setQuery("")}
+          >
+            ×
+          </button>
+        )}
+      </div>
 
       <div className="sidebar-scroll">
         {sessions.length > 0 && (
@@ -219,10 +245,11 @@ export function Sidebar({
 
         {filtered.map((group) => {
           const isOpen = expanded[group.cwd] ?? group.sessions.length <= 6;
+          const label = projectLabel(group.cwd);
           return (
             <Section
               key={group.cwd}
-              title={projectLabel(group.cwd)}
+              title={label}
               fullTitle={group.cwd}
               count={group.sessions.length}
               collapsible
@@ -230,6 +257,7 @@ export function Sidebar({
               onToggle={() =>
                 setExpanded((current) => ({ ...current, [group.cwd]: !isOpen }))
               }
+              onQuickNew={() => onNewSession(group.cwd)}
             >
               {isOpen &&
                 group.sessions.map((session) => (
@@ -255,6 +283,7 @@ function Section({
   collapsible,
   open,
   onToggle,
+  onQuickNew,
 }: {
   title: string;
   /** Optional full path shown on hover when `title` is a shortened name. */
@@ -264,24 +293,38 @@ function Section({
   collapsible?: boolean;
   open?: boolean;
   onToggle?: () => void;
+  onQuickNew?: () => void;
 }) {
   const hoverTitle = fullTitle ?? title;
   return (
     <div className="sidebar-section">
       <div className="sidebar-section-head">
         {collapsible ? (
-          <button
-            type="button"
-            className="sidebar-section-title"
-            onClick={onToggle}
-            aria-expanded={open}
-          >
-            <span className="caret">{open ? "▾" : "▸"}</span>
-            <span className="truncate" title={hoverTitle}>
-              {title}
-            </span>
-            <span className="count">{count}</span>
-          </button>
+          <div className="sidebar-section-row">
+            <button
+              type="button"
+              className="sidebar-section-title"
+              onClick={onToggle}
+              aria-expanded={open}
+            >
+              <span className="caret">{open ? "▾" : "▸"}</span>
+              <span className="truncate" title={hoverTitle}>
+                {title}
+              </span>
+              <span className="count">{count}</span>
+            </button>
+            {onQuickNew && (
+              <button
+                type="button"
+                className="sidebar-section-new"
+                onClick={onQuickNew}
+                title={`在 ${title} 中新建会话`}
+                aria-label={`在 ${title} 中新建会话`}
+              >
+                <IconPlus size={12} />
+              </button>
+            )}
+          </div>
         ) : (
           <div className="sidebar-section-title">
             <span className="truncate" title={hoverTitle}>

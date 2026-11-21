@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSessions, projectDirFor } from "./lib/store";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, projectLabel } from "./components/Sidebar";
 import { Transcript, formatTokens } from "./components/Transcript";
 import { Composer, ContextRing, ExtensionDialogs } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { Dock, type DockTab } from "./components/Dock";
+import {
+  IconCommand,
+  IconDock,
+  IconFolder,
+  IconLaptop,
+  IconSend,
+  IconSettings,
+  IconSidebar,
+  IconTree,
+} from "./components/Icons";
 import {
   CommandPalette,
   ConfirmDialog,
@@ -18,6 +28,9 @@ import {
 } from "./components/Panels";
 import { api, onOpenRequest } from "./lib/api";
 import { revealInPreview } from "./components/Markdown";
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, Math.round(value)));
 
 /** The whole app: sidebar + session tabs + transcript + composer. */
 export default function App() {
@@ -40,8 +53,16 @@ export default function App() {
     { entryId: string; text: string }[] | null
   >(null);
   const [treeOpen, setTreeOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [dockOpen, setDockOpen] = useState(true);
   const [dockTab, setDockTab] = useState<DockTab>("files");
+  const [sidebarDragWidth, setSidebarDragWidth] = useState<number | null>(null);
+  const [dockDragWidth, setDockDragWidth] = useState<number | null>(null);
+  const [gitRefreshTick, setGitRefreshTick] = useState(0);
+  const prevBusyRef = useRef<{ id: string | null; busy: boolean }>({
+    id: null,
+    busy: false,
+  });
   const [previewRequest, setPreviewRequest] = useState<{
     path: string;
     requestId: number;
@@ -50,6 +71,66 @@ export default function App() {
   const [welcomeText, setWelcomeText] = useState("");
   const [startingHome, setStartingHome] = useState(false);
   const [welcomeError, setWelcomeError] = useState<string | null>(null);
+
+  const sidebarWidth = sidebarDragWidth ?? store.settings?.sidebarWidth ?? 300;
+  const dockWidth = dockDragWidth ?? store.settings?.dockWidth ?? 320;
+
+  // Refresh the right dock's git status badge automatically when a turn settles.
+  useEffect(() => {
+    const prev = prevBusyRef.current;
+    const currentId = active?.info.id ?? null;
+    const currentBusy = Boolean(active?.busy);
+    if (prev.id === currentId && prev.busy && !currentBusy) {
+      setGitRefreshTick((tick) => tick + 1);
+    }
+    prevBusyRef.current = { id: currentId, busy: currentBusy };
+  }, [active?.info.id, active?.busy]);
+
+  const startResizeSidebar = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    let latest = startWidth;
+    document.body.classList.add("resizing-cols");
+    const onMove = (moveEvent: MouseEvent) => {
+      latest = clamp(startWidth + (moveEvent.clientX - startX), 220, 480);
+      setSidebarDragWidth(latest);
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing-cols");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setSidebarDragWidth(null);
+      if (latest !== startWidth) {
+        void store.updateSettings({ sidebarWidth: latest });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startResizeDock = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = dockWidth;
+    let latest = startWidth;
+    document.body.classList.add("resizing-cols");
+    const onMove = (moveEvent: MouseEvent) => {
+      latest = clamp(startWidth - (moveEvent.clientX - startX), 240, 620);
+      setDockDragWidth(latest);
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing-cols");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDockDragWidth(null);
+      if (latest !== startWidth) {
+        void store.updateSettings({ dockWidth: latest });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   /** Start chatting without picking a project: open a session in the
    * user's home directory ("此计算机") and send the first message. */
@@ -112,6 +193,10 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
         event.preventDefault();
         setDockOpen((open) => !open);
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === "\\") {
+        event.preventDefault();
+        setSidebarOpen((open) => !open);
       }
       if (
         event.key === "Escape" &&
@@ -270,28 +355,43 @@ export default function App() {
 
   return (
     <div
-      className="app"
+      className={`app ${sidebarOpen ? "" : "sidebar-collapsed"}`}
       style={{
-        gridTemplateColumns: `${store.settings?.sidebarWidth ?? 300}px 1fr`,
+        gridTemplateColumns: sidebarOpen ? `${sidebarWidth}px 1fr` : "1fr",
       }}
     >
-      <Sidebar
-        projects={store.projects}
-        sessions={sessions}
-        activeId={activeId}
-        onSelect={store.setActiveId}
-        onOpen={(projectDir, sessionPath) =>
-          void store.openProject(projectDir, sessionPath)
-        }
-        onClose={(id) => void store.closeSession(id)}
-        newSessionProjectDir={
-          active?.info.projectDir ??
-          sessions[sessions.length - 1]?.info.projectDir ??
-          store.settings?.lastProject ??
-          null
-        }
-        onNewSession={(projectDir) => void store.openProject(projectDir)}
-      />
+      {sidebarOpen && (
+        <div className="sidebar-wrap">
+          <Sidebar
+            projects={store.projects}
+            sessions={sessions}
+            activeId={activeId}
+            onSelect={store.setActiveId}
+            onOpen={(projectDir, sessionPath) =>
+              void store.openProject(projectDir, sessionPath)
+            }
+            onClose={(id) => void store.closeSession(id)}
+            newSessionProjectDir={
+              active?.info.projectDir ??
+              sessions[sessions.length - 1]?.info.projectDir ??
+              store.settings?.lastProject ??
+              null
+            }
+            onNewSession={(projectDir) => void store.openProject(projectDir)}
+          />
+          <div
+            className="resizer resizer-sidebar"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整侧栏宽度"
+            title="拖动调整侧栏宽度，双击重置"
+            onMouseDown={startResizeSidebar}
+            onDoubleClick={() =>
+              void store.updateSettings({ sidebarWidth: 300 })
+            }
+          />
+        </div>
+      )}
 
       <main className="main">
         {!install?.found && !loading && (
@@ -380,6 +480,16 @@ export default function App() {
           <>
             <header className="toolbar">
               <div className="toolbar-left">
+                <button
+                  type="button"
+                  className={`btn ghost toolbar-icon-btn ${sidebarOpen ? "active" : ""}`}
+                  onClick={() => setSidebarOpen((open) => !open)}
+                  aria-pressed={sidebarOpen}
+                  aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"}
+                  title="切换侧栏（Ctrl+\）"
+                >
+                  <IconSidebar size={15} />
+                </button>
                 <ContextRing
                   percent={active.stats?.percent}
                   tokens={active.stats?.tokens}
@@ -394,36 +504,40 @@ export default function App() {
               <div className="toolbar-right">
                 <button
                   type="button"
-                  className="btn ghost"
+                  className="btn ghost btn-icon-text"
                   onClick={openPalette}
                   title="命令面板（Ctrl+K）"
                 >
+                  <IconCommand size={14} />
                   命令
                 </button>
                 <button
                   type="button"
-                  className={`btn ghost ${treeOpen ? "active" : ""}`}
+                  className={`btn ghost btn-icon-text ${treeOpen ? "active" : ""}`}
                   onClick={() => setTreeOpen(!treeOpen)}
                   aria-pressed={treeOpen}
                   title="会话树"
                 >
+                  <IconTree size={14} />
                   会话树
                 </button>
                 <button
                   type="button"
-                  className={`btn ghost ${dockOpen ? "active" : ""}`}
+                  className={`btn ghost btn-icon-text ${dockOpen ? "active" : ""}`}
                   onClick={() => setDockOpen(!dockOpen)}
                   aria-pressed={dockOpen}
                   title="右侧工作台（Ctrl+B）"
                 >
+                  <IconDock size={14} />
                   面板
                 </button>
                 <button
                   type="button"
-                  className="btn ghost"
+                  className="btn ghost btn-icon-text"
                   onClick={() => setSettingsOpen(true)}
                   title="设置"
                 >
+                  <IconSettings size={14} />
                   设置
                 </button>
               </div>
@@ -452,15 +566,30 @@ export default function App() {
                 />
               </div>
               {dockOpen && (
-                <Dock
-                  projectDir={active.info.projectDir}
-                  sessionId={active.info.id}
-                  widgets={active.extensionWidgets}
-                  tab={dockTab}
-                  onTab={setDockTab}
-                  onReveal={revealInPreview}
-                  previewRequest={previewRequest}
-                />
+                <>
+                  <div
+                    className="resizer resizer-dock"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="调整右侧面板宽度"
+                    title="拖动调整右侧面板宽度，双击重置"
+                    onMouseDown={startResizeDock}
+                    onDoubleClick={() =>
+                      void store.updateSettings({ dockWidth: 320 })
+                    }
+                  />
+                  <Dock
+                    projectDir={active.info.projectDir}
+                    sessionId={active.info.id}
+                    widgets={active.extensionWidgets}
+                    tab={dockTab}
+                    onTab={setDockTab}
+                    onReveal={revealInPreview}
+                    previewRequest={previewRequest}
+                    width={dockWidth}
+                    refreshTick={gitRefreshTick}
+                  />
+                </>
               )}
             </div>
 
@@ -474,6 +603,7 @@ export default function App() {
               queues={active.queues}
               pendingMessageCount={active.state?.pendingMessageCount}
               stopping={active.stopping}
+              onOpenCommands={openPalette}
               onDraftChange={(draft) => store.setDraft(active.info.id, draft)}
               onSend={store.send}
               onSteer={store.steer}
@@ -523,15 +653,34 @@ export default function App() {
           </>
         ) : (
           <div className="placeholder">
+            {!sidebarOpen && (
+              <div className="welcome-topbar">
+                <button
+                  type="button"
+                  className="btn ghost toolbar-icon-btn"
+                  onClick={() => setSidebarOpen(true)}
+                  aria-label="展开侧栏"
+                  title="展开侧栏（Ctrl+\）"
+                >
+                  <IconSidebar size={15} />
+                </button>
+              </div>
+            )}
             {loading ? (
               <p>正在加载…</p>
             ) : (
               <>
                 <div className="welcome-card">
+                  <div className="welcome-pill">
+                    <span className="welcome-pill-dot" aria-hidden="true" />
+                    {install?.found
+                      ? `Pi ${install.version ?? ""} 已就绪`
+                      : "未检测到 Pi"}
+                  </div>
                   <h1 className="welcome-title">我们要构建什么？</h1>
                   <p className="welcome-sub">
                     {install?.found
-                      ? `已就绪：pi ${install.version ?? ""} · 直接输入即可开始，默认在你的用户目录工作`
+                      ? "直接输入即可开始，默认在你的用户目录工作；也可从下方快速切入最近项目"
                       : "未检测到 pi，请先安装或设置 PI_EXECUTABLE"}
                   </p>
                   <form
@@ -541,33 +690,72 @@ export default function App() {
                       void startHomeSession(welcomeText);
                     }}
                   >
-                    <span
-                      className="welcome-context"
-                      title="默认在你的用户目录开始；左侧可选具体项目"
-                    >
-                      🖥 此计算机
-                    </span>
-                    <input
+                    <textarea
                       value={welcomeText}
-                      placeholder="随心输入，Enter 开始…"
+                      rows={2}
+                      placeholder="随心输入，Enter 开始，Shift+Enter 换行…"
                       aria-label="开始新对话"
                       onChange={(event) => setWelcomeText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" &&
+                          !event.shiftKey &&
+                          !event.nativeEvent.isComposing
+                        ) {
+                          event.preventDefault();
+                          void startHomeSession(welcomeText);
+                        }
+                      }}
                       disabled={startingHome}
                     />
-                    <button
-                      type="submit"
-                      className="btn primary"
-                      disabled={!welcomeText.trim() || startingHome}
-                    >
-                      {startingHome ? "启动中…" : "开始"}
-                    </button>
+                    <div className="welcome-composer-bar">
+                      <span
+                        className="welcome-context"
+                        title="默认在你的用户目录开始；左侧可选具体项目"
+                      >
+                        <IconLaptop size={13} />
+                        此计算机
+                      </span>
+                      <button
+                        type="submit"
+                        className="btn primary btn-icon-text"
+                        disabled={!welcomeText.trim() || startingHome}
+                      >
+                        <IconSend size={13} />
+                        {startingHome ? "启动中…" : "开始"}
+                      </button>
+                    </div>
                   </form>
                   {welcomeError && (
                     <p className="welcome-error" role="alert">
                       {welcomeError}
                     </p>
                   )}
-                  <p className="muted" style={{ marginTop: 18 }}>
+                  {store.projects.length > 0 && (
+                    <div className="welcome-recent" aria-label="最近项目">
+                      <div className="welcome-recent-title">最近项目</div>
+                      <div className="welcome-recent-grid">
+                        {store.projects.slice(0, 4).map((group) => (
+                          <button
+                            key={group.cwd}
+                            type="button"
+                            className="welcome-project-chip"
+                            title={group.cwd}
+                            onClick={() => void store.openProject(group.cwd)}
+                          >
+                            <IconFolder size={13} />
+                            <span className="truncate">
+                              {projectLabel(group.cwd)}
+                            </span>
+                            <span className="welcome-project-count">
+                              {group.sessions.length}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <p className="muted welcome-footer-links">
                     左侧「打开项目…」可选择具体项目目录 ·{" "}
                     <button
                       type="button"
@@ -609,12 +797,14 @@ export default function App() {
               fontSize: 14,
               fontFamily: "",
               sidebarWidth: 300,
+              dockWidth: 320,
               expandTools: false,
               logLevel: "info",
               minimizeToTray: true,
             }
           }
           settingsPath={store.settingsPath}
+          piVersion={install?.version}
           onChange={(patch) => void store.updateSettings(patch)}
           onClose={() => setSettingsOpen(false)}
         />

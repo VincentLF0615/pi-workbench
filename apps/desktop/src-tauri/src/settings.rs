@@ -25,7 +25,7 @@ pub fn settings_path() -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
-    /// `system`, `light` or `dark`.
+    /// `system`, `light`, `parchment` or `dark`.
     pub theme: String,
     /// Font size in px for transcript text.
     pub font_size: u32,
@@ -33,6 +33,8 @@ pub struct Settings {
     pub font_family: String,
     /// Sidebar width in px.
     pub sidebar_width: u32,
+    /// Right workbench dock width in px.
+    pub dock_width: u32,
     /// Last opened project directory.
     pub last_project: Option<String>,
     /// Sessions to reopen on launch.
@@ -52,6 +54,7 @@ impl Default for Settings {
             font_size: 14,
             font_family: String::new(),
             sidebar_width: 300,
+            dock_width: 320,
             last_project: None,
             open_sessions: Vec::new(),
             expand_tools: false,
@@ -172,6 +175,21 @@ mod tests {
         let parsed: Settings =
             serde_json::from_str(r#"{"sidebarWidth":420,"openSessions":["a.jsonl"]}"#).unwrap();
         assert_eq!(parsed.sidebar_width, 420);
+        assert_eq!(parsed.dock_width, 320);
         assert_eq!(parsed.open_sessions, vec!["a.jsonl".to_string()]);
+    }
+
+    #[test]
+    fn parchment_theme_and_dock_width_round_trip() {
+        let path = scratch_path("settings-parchment");
+        let probe = Settings {
+            theme: "parchment".to_string(),
+            dock_width: 440,
+            ..Settings::default()
+        };
+        save_to(&path, &probe).expect("save");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.theme, "parchment");
+        assert_eq!(loaded.dock_width, 440);
     }
 }

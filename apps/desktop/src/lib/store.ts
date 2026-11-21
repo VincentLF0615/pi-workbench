@@ -1092,6 +1092,7 @@ const defaultSettings: Settings = {
   fontSize: 14,
   fontFamily: "",
   sidebarWidth: 300,
+  dockWidth: 320,
   lastProject: null,
   openSessions: [],
   expandTools: false,
