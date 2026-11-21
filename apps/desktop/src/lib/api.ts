@@ -58,6 +58,7 @@ export const api = {
   discoverPi: () => call<PiInstall>("discover_pi"),
 
   listProjects: () => call<ProjectGroupInfo[]>("list_projects"),
+  defaultProjectDir: () => call<string>("default_project_dir"),
   listSessionsFor: (projectDir: string) =>
     call<SessionFileInfo[]>("list_sessions_for", { projectDir }),
   listSessions: () => call<SessionInfo[]>("list_sessions"),

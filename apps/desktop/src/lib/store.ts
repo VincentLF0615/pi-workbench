@@ -7,8 +7,14 @@ import {
   onSessionOpened,
   onSessionSnapshot,
 } from "./api";
-import { applyEvent, fromHistory, nextId } from "./transcript";
+import {
+  applyEvent,
+  deriveSessionTitle,
+  fromHistory,
+  nextId,
+} from "./transcript";
 import { normalizeStats } from "./stats";
+import { notifyTurnFinished } from "./notify";
 import { messageText } from "./types";
 import type {
   PiBatch,
@@ -62,7 +68,7 @@ export type PiCompatibility =
   | { level: "unknown"; message: string };
 
 /** pi versions this build has been exercised against. */
-export const TESTED_PI = "1.5";
+export const TESTED_PI = "1.6";
 
 /** Compare an installed pi version against `TESTED_PI`. */
 export function checkPiCompatibility(
@@ -112,8 +118,12 @@ export interface UseSessionsResult {
   loading: boolean;
   error: string | null;
   setActiveId: (id: string | null) => void;
-  openProject: (projectDir: string, sessionPath?: string) => Promise<void>;
+  openProject: (
+    projectDir: string,
+    sessionPath?: string,
+  ) => Promise<string | null>;
   closeSession: (id: string) => Promise<void>;
+  sendTo: (id: string, text: string, images?: ImageContent[]) => Promise<void>;
   send: (text: string, images?: ImageContent[]) => Promise<void>;
   steer: (text: string, images?: ImageContent[]) => Promise<void>;
   followUp: (text: string, images?: ImageContent[]) => Promise<void>;
@@ -212,6 +222,7 @@ export function useSessions(): UseSessionsResult {
   const toastSeq = useRef(0);
   const sessionsRef = useRef<SessionRuntime[]>([]);
   const stoppingRef = useRef(new Set<string>());
+  const turnFailures = useRef(new Map<string, boolean>());
   sessionsRef.current = sessions;
 
   const patch = useCallback(
@@ -332,6 +343,56 @@ export function useSessions(): UseSessionsResult {
   // Event pump.
   useEffect(() => {
     const unlisten = onPiEvents((batch: PiBatch) => {
+      const turnKey = `${batch.sessionId}:${batch.generation}`;
+      for (const envelope of batch.events) {
+        if (envelope.kind !== "pi") continue;
+        const event = envelope.event;
+        if (event.type === "agent_start") {
+          turnFailures.current.set(turnKey, false);
+        } else if (
+          event.type === "message_end" &&
+          event.message.role === "assistant"
+        ) {
+          turnFailures.current.set(
+            turnKey,
+            event.message.stopReason === "error" ||
+              !!event.message.errorMessage,
+          );
+        } else if (event.type === "auto_retry_end") {
+          turnFailures.current.set(turnKey, !event.success);
+        } else if (event.type === "agent_settled") {
+          const runtime = sessionsRef.current.find(
+            (candidate) =>
+              candidate.info.id === batch.sessionId &&
+              candidate.info.generation === batch.generation,
+          );
+          if (runtime) {
+            const opener = runtime.transcript.find(
+              (item) => item.kind === "user",
+            );
+            const openingText = opener?.kind === "user" ? opener.text : "";
+            const derivedTitle = openingText
+              ? deriveSessionTitle(openingText)
+              : null;
+            const projectLabel =
+              runtime.info.projectDir.split(/[\\/]/).filter(Boolean).pop() ??
+              "";
+            const hasDefaultTitle =
+              runtime.info.label === "正在打开…" ||
+              runtime.info.label === projectLabel;
+            const title = hasDefaultTitle
+              ? (derivedTitle ?? runtime.info.label)
+              : runtime.info.label;
+            const outcome = event.aborted
+              ? "stopped"
+              : turnFailures.current.get(turnKey)
+                ? "failed"
+                : "completed";
+            void notifyTurnFinished(title, outcome);
+          }
+          turnFailures.current.delete(turnKey);
+        }
+      }
       setSessions((current) =>
         current.map((runtime) => {
           if (
@@ -458,6 +519,38 @@ export function useSessions(): UseSessionsResult {
             envelope.kind === "pi" && envelope.event.type === "agent_settled",
         )
       ) {
+        // Auto-title: once the first turn settles, name the session after
+        // the user's opening message when pi has not named it yet.
+        const runtime = sessionsRef.current.find(
+          (candidate) => candidate.info.id === batch.sessionId,
+        );
+        const defaultLabel =
+          !runtime ||
+          runtime.info.label === "正在打开…" ||
+          runtime.info.label ===
+            (runtime.info.projectDir.split(/[\\/]/).filter(Boolean).pop() ??
+              "");
+        if (runtime && defaultLabel) {
+          const opener = runtime.transcript.find(
+            (item) => item.kind === "user",
+          );
+          const text =
+            opener && opener.kind === "user" ? opener.text : undefined;
+          const title = text ? deriveSessionTitle(text) : null;
+          if (title) {
+            void api
+              .setSessionName(batch.sessionId, title)
+              .then(() => {
+                patch(batch.sessionId, (current) => ({
+                  ...current,
+                  info: { ...current.info, label: title },
+                }));
+              })
+              .catch((cause) =>
+                console.error("Unable to auto-title session", cause),
+              );
+          }
+        }
         void Promise.all([
           api.getState(batch.sessionId),
           api.getSessionStats(batch.sessionId),
@@ -517,7 +610,9 @@ export function useSessions(): UseSessionsResult {
     async (projectDir: string, sessionPath?: string) => {
       setError(null);
       try {
-        adopt(await api.openSession(projectDir, sessionPath), true);
+        const snapshot = await api.openSession(projectDir, sessionPath);
+        adopt(snapshot, true);
+        return snapshot.info.id;
       } catch (cause) {
         setError(String(cause));
         const live = await api.listSessions().catch(() => null);
@@ -527,6 +622,7 @@ export function useSessions(): UseSessionsResult {
               live.some((info) => info.id === runtime.info.id),
             ),
           );
+        return null;
       }
     },
     [adopt],
@@ -542,10 +638,18 @@ export function useSessions(): UseSessionsResult {
       setError(String(cause));
       return;
     }
-    setSessions((current) =>
-      current.filter((runtime) => runtime.info.id !== id),
-    );
-    setActiveId((current) => (current === id ? null : current));
+    const current = sessionsRef.current;
+    const closingIndex = current.findIndex((runtime) => runtime.info.id === id);
+    const remaining = current.filter((runtime) => runtime.info.id !== id);
+    setSessions(remaining);
+    setActiveId((active) => {
+      if (active !== id) return active;
+      const nextIndex = Math.min(
+        Math.max(closingIndex, 0),
+        remaining.length - 1,
+      );
+      return remaining[nextIndex]?.info.id ?? null;
+    });
 
     // Drop it from the saved list so the next launch does not reopen it.
     const closedPath = closing?.info.sessionPath;
@@ -569,10 +673,9 @@ export function useSessions(): UseSessionsResult {
     [patch],
   );
 
-  const send = useCallback(
-    async (text: string, images: ImageContent[] = []) => {
-      const id = activeId;
-      if (!id || (!text.trim() && images.length === 0)) return;
+  const sendTo = useCallback(
+    async (id: string, text: string, images: ImageContent[] = []) => {
+      if (!text.trim() && images.length === 0) return;
       const itemId = nextId();
       patch(id, (runtime) => ({
         ...runtime,
@@ -598,7 +701,14 @@ export function useSessions(): UseSessionsResult {
         throw cause;
       }
     },
-    [activeId, patch],
+    [patch],
+  );
+
+  const send = useCallback(
+    async (text: string, images: ImageContent[] = []) => {
+      if (activeId) await sendTo(activeId, text, images);
+    },
+    [activeId, sendTo],
   );
 
   const steer = useCallback(
@@ -952,6 +1062,7 @@ export function useSessions(): UseSessionsResult {
     setActiveId,
     openProject,
     closeSession,
+    sendTo,
     send,
     steer,
     followUp,

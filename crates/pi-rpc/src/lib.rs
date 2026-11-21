@@ -20,7 +20,7 @@
 //! The client uses blocking IO on background threads so it can be driven from
 //! any UI event loop without an async runtime dependency.
 //!
-//! Protocol references (pi 1.5.x): `docs/rpc.md`, `docs/rpc-commands.md`,
+//! Protocol references (pi 1.6.x): `docs/rpc.md`, `docs/rpc-commands.md`,
 //! `docs/json.md`, `docs/rpc-extension-ui.md` inside
 //! `@earendil-works/pi-coding-agent`.
 

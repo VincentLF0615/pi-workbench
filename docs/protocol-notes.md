@@ -1,4 +1,4 @@
-# pi RPC 协议笔记（pi 1.5.2）
+# pi RPC 协议笔记（pi 1.6.0）
 
 本文件记录实现 `pi-rpc` 时核对过的协议事实，供后续 UI 层参考。权威文档在
 `~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/docs/`。
@@ -11,7 +11,7 @@ node <agent>/bin/pi-launcher.js --mode rpc [--no-session] [--session <path>]
 ```
 
 - launcher 读取 `install/current-version` 后 `spawnSync(node, cliPath, ...)`，stdio 继承，因此从 Rust 直接 spawn 也能穿透。
-- 托管安装：`%USERPROFILE%\.pi\agent\bin\pi-launcher.js`；版本目录 `~/.pi/agent/install/releases/1.5.2/`。
+- 托管安装：`%USERPROFILE%\.pi\agent\bin\pi-launcher.js`；版本目录 `~/.pi/agent/install/releases/1.6.0/`。
 - 会话文件：`~/.pi/agent/sessions/--<path>--/<timestamp>_<id>.jsonl`，首行是 `{"type":"session","version":3,...}`，之后是 `id`/`parentId` 树。
 
 ## 分帧
@@ -29,7 +29,7 @@ node <agent>/bin/pi-launcher.js --mode rpc [--no-session] [--session <path>]
 | stdout | 会话事件 | 见下，通常无 id |
 | 双向 | `extension_ui_request` / `extension_ui_response` | 扩展对话框与通知 |
 
-## 命令（1.5.2，共 33 个）
+## 命令（1.6.0，共 33 个）
 
 prompt / steer / follow_up / abort / clear_queue / new_session / get_state /
 get_messages / set_model / cycle_model / get_available_models /
@@ -44,7 +44,7 @@ get_tree / get_last_assistant_text / set_session_name / get_commands
 - `prompt` 的 `success` 只代表「接受/排队/处理」，完成看 `agent_settled`；`data.disposition` 为 `started|queued|handled`。
 - 流式期间再发消息必须带 `streamingBehavior: "steer" | "followUp"`，否则报错。
 - `get_entries` 支持 `since` 游标（entry id 持久），返回 `leafId`，适合增量恢复。
-- `get_tree` 返回 `{tree, leafId}`；1.5.2 的 RPC **没有**「移动 leaf」命令，树导航只能靠 `fork`/`clone`，或自己带一个 bridge 扩展。
+- `get_tree` 返回 `{tree, leafId}`；1.6.0 的 RPC **没有**「移动 leaf」命令，树导航只能靠 `fork`/`clone`，或自己带一个 bridge 扩展。
 - `compact` 可能耗时数分钟，客户端超时要单独放宽。
 
 ## 事件

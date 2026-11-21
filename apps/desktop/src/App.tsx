@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSessions, projectDirFor } from "./lib/store";
 import { Sidebar } from "./components/Sidebar";
@@ -17,13 +17,7 @@ import {
   SettingsDialog,
 } from "./components/Panels";
 import { api, onOpenRequest } from "./lib/api";
-
-/** Ask the preview pane to open a file. */
-function reveal(path: string) {
-  window.dispatchEvent(
-    new CustomEvent("pi-workbench:reveal", { detail: { path } }),
-  );
-}
+import { revealInPreview } from "./components/Markdown";
 
 /** The whole app: sidebar + session tabs + transcript + composer. */
 export default function App() {
@@ -37,6 +31,7 @@ export default function App() {
     sessionId: string;
   } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteError, setPaletteError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -47,16 +42,72 @@ export default function App() {
   const [treeOpen, setTreeOpen] = useState(false);
   const [dockOpen, setDockOpen] = useState(true);
   const [dockTab, setDockTab] = useState<DockTab>("files");
+  const [previewRequest, setPreviewRequest] = useState<{
+    path: string;
+    requestId: number;
+  } | null>(null);
+  const previewSequence = useRef(0);
+  const [welcomeText, setWelcomeText] = useState("");
+  const [startingHome, setStartingHome] = useState(false);
+  const [welcomeError, setWelcomeError] = useState<string | null>(null);
+
+  /** Start chatting without picking a project: open a session in the
+   * user's home directory ("此计算机") and send the first message. */
+  const startHomeSession = async (text: string) => {
+    if (!text.trim() || startingHome) return;
+    setStartingHome(true);
+    setWelcomeError(null);
+    let sessionId: string | null = null;
+    try {
+      const home = await api.defaultProjectDir();
+      sessionId = await store.openProject(home);
+      if (!sessionId) {
+        setWelcomeError("无法打开默认工作目录，请从左侧选择具体项目。");
+        return;
+      }
+      await store.sendTo(sessionId, text.trim());
+      setWelcomeText("");
+    } catch (cause) {
+      if (sessionId) {
+        store.setDraft(sessionId, { text: text.trim(), images: [] });
+      }
+      setWelcomeError(`无法开始对话：${String(cause)}`);
+    } finally {
+      setStartingHome(false);
+    }
+  };
+
+  // A reveal can originate before the preview tab (or the whole dock) mounts.
+  // Keep the request in App so no component has to be mounted to receive it.
+  useEffect(() => {
+    const onReveal = (event: Event) => {
+      const path = (event as CustomEvent<{ path?: string }>).detail?.path;
+      if (!path) return;
+      previewSequence.current += 1;
+      setPreviewRequest({ path, requestId: previewSequence.current });
+      setDockOpen(true);
+      setDockTab("preview");
+    };
+    window.addEventListener("pi-workbench:reveal", onReveal);
+    return () => window.removeEventListener("pi-workbench:reveal", onReveal);
+  }, []);
+
+  const openPalette = useCallback(() => {
+    if (!activeId) return;
+    setPaletteError(null);
+    setPaletteOpen(true);
+    void store.loadCommands().catch((cause) => {
+      setPaletteError(`无法加载命令：${String(cause)}`);
+    });
+  }, [activeId, store.loadCommands]);
 
   // Ctrl/Cmd+K opens the command palette, Ctrl+B toggles the right dock.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setPaletteOpen((open) => {
-          if (!open) void store.loadCommands();
-          return !open;
-        });
+        if (paletteOpen) setPaletteOpen(false);
+        else openPalette();
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -86,7 +137,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [store]);
+  }, [store, openPalette, paletteOpen]);
 
   const loadTree = store.loadTree;
   // Load the tree when its panel opens.
@@ -138,10 +189,10 @@ export default function App() {
   }, [active?.info.id, active?.windowTitle]);
 
   const runCommand = useCallback(
-    (name: string) => {
-      if (!activeId) return;
+    async (name: string) => {
+      if (!activeId) throw new Error("请先打开一个会话");
       // Slash commands are sent as a normal prompt, prefixed with `/`.
-      void api.sendPrompt(activeId, `/${name}`);
+      await api.sendPrompt(activeId, `/${name}`);
     },
     [activeId],
   );
@@ -329,13 +380,6 @@ export default function App() {
           <>
             <header className="toolbar">
               <div className="toolbar-left">
-                <ModelPicker
-                  sessionId={active.info.id}
-                  busy={active.busy}
-                  model={active.state?.model}
-                  thinkingLevel={active.state?.thinkingLevel}
-                  onApply={store.configureModel}
-                />
                 <ContextRing
                   percent={active.stats?.percent}
                   tokens={active.stats?.tokens}
@@ -351,10 +395,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => {
-                    setPaletteOpen(true);
-                    void store.loadCommands();
-                  }}
+                  onClick={openPalette}
                   title="命令面板（Ctrl+K）"
                 >
                   命令
@@ -417,10 +458,8 @@ export default function App() {
                   widgets={active.extensionWidgets}
                   tab={dockTab}
                   onTab={setDockTab}
-                  onReveal={(path) => {
-                    reveal(path);
-                    setDockTab("preview");
-                  }}
+                  onReveal={revealInPreview}
+                  previewRequest={previewRequest}
                 />
               )}
             </div>
@@ -440,6 +479,16 @@ export default function App() {
               onSteer={store.steer}
               onFollowUp={store.followUp}
               onAbort={() => void store.abort()}
+              footer={
+                <ModelPicker
+                  sessionId={active.info.id}
+                  busy={active.busy}
+                  disabled={active.info.closed || !active.state}
+                  model={active.state?.model}
+                  thinkingLevel={active.state?.thinkingLevel}
+                  onApply={store.configureModel}
+                />
+              }
             />
 
             {active.stats?.totalTokens != null && (
@@ -478,18 +527,57 @@ export default function App() {
               <p>正在加载…</p>
             ) : (
               <>
-                <h1>Pi Workbench</h1>
-                <p>
-                  {install?.found
-                    ? `已就绪：pi ${install.version ?? ""}`
-                    : "未检测到 pi"}
-                </p>
-                <p className="muted">
-                  在左侧选择项目开始，或点「打开项目」输入目录。
-                </p>
-                <p className="muted">
-                  Ctrl+K 打开命令面板 · 标签页「⋯」或右键打开会话操作
-                </p>
+                <div className="welcome-card">
+                  <h1 className="welcome-title">我们要构建什么？</h1>
+                  <p className="welcome-sub">
+                    {install?.found
+                      ? `已就绪：pi ${install.version ?? ""} · 直接输入即可开始，默认在你的用户目录工作`
+                      : "未检测到 pi，请先安装或设置 PI_EXECUTABLE"}
+                  </p>
+                  <form
+                    className="welcome-composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void startHomeSession(welcomeText);
+                    }}
+                  >
+                    <span
+                      className="welcome-context"
+                      title="默认在你的用户目录开始；左侧可选具体项目"
+                    >
+                      🖥 此计算机
+                    </span>
+                    <input
+                      value={welcomeText}
+                      placeholder="随心输入，Enter 开始…"
+                      aria-label="开始新对话"
+                      onChange={(event) => setWelcomeText(event.target.value)}
+                      disabled={startingHome}
+                    />
+                    <button
+                      type="submit"
+                      className="btn primary"
+                      disabled={!welcomeText.trim() || startingHome}
+                    >
+                      {startingHome ? "启动中…" : "开始"}
+                    </button>
+                  </form>
+                  {welcomeError && (
+                    <p className="welcome-error" role="alert">
+                      {welcomeError}
+                    </p>
+                  )}
+                  <p className="muted" style={{ marginTop: 18 }}>
+                    左侧「打开项目…」可选择具体项目目录 ·{" "}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      设置
+                    </button>
+                  </p>
+                </div>
               </>
             )}
           </div>
@@ -501,6 +589,7 @@ export default function App() {
           open={paletteOpen}
           commands={active?.commands ?? null}
           busy={active?.busy ?? false}
+          error={paletteError}
           onRun={runCommand}
           onClose={() => setPaletteOpen(false)}
         />
@@ -552,20 +641,31 @@ export default function App() {
           onClose={() => setDeletePath(null)}
         />
 
-        {sessions.flatMap((runtime) =>
-          runtime.toasts.map((toast) => (
-            <div key={`${runtime.info.id}-${toast.id}`} className="toast">
-              {toast.message}
-              <button
-                type="button"
-                className="toast-close"
-                onClick={() => store.dismissToast(toast.id)}
+        <div className="toast-stack">
+          {sessions.flatMap((runtime) =>
+            runtime.toasts.map((toast) => (
+              <div
+                key={`${runtime.info.id}-${toast.id}`}
+                className="toast"
+                role="alert"
+                title={`会话：${runtime.info.label}`}
               >
-                ×
-              </button>
-            </div>
-          )),
-        )}
+                {runtime.info.id !== activeId && (
+                  <span className="toast-session">{runtime.info.label}</span>
+                )}
+                <span>{toast.message}</span>
+                <button
+                  type="button"
+                  className="toast-close"
+                  aria-label={`关闭${runtime.info.label}的错误提示`}
+                  onClick={() => store.dismissToast(toast.id)}
+                >
+                  ×
+                </button>
+              </div>
+            )),
+          )}
+        </div>
       </main>
     </div>
   );

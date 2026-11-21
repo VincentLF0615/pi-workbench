@@ -1,4 +1,4 @@
-//! Model capabilities follow Pi 1.5's getSupportedThinkingLevels semantics.
+//! Model capabilities follow Pi 1.6's getSupportedThinkingLevels semantics.
 //! Null explicitly disables a level; omitted normal levels retain Pi defaults.
 
 use pi_rpc::{Error, PiClient, Result};
@@ -151,6 +151,15 @@ mod tests {
         model["thinkingLevelMap"]["off"] = json!("none");
         model["thinkingLevelMap"]["max"] = json!("max");
         assert_eq!(thinking_levels(&model), ["off", "low", "high", "max"]);
+    }
+
+    #[test]
+    fn gpt_6_2_does_not_offer_unsupported_off_or_minimal_levels() {
+        let model = json!({"reasoning": true, "thinkingLevelMap": {
+            "off": null, "minimal": null, "low": "low", "medium": "medium",
+            "high": "high", "xhigh": null, "max": null
+        }});
+        assert_eq!(thinking_levels(&model), ["low", "medium", "high"]);
     }
 
     #[test]

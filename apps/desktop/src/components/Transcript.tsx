@@ -4,9 +4,11 @@ import {
   Markdown,
   ThinkingBlockView,
   ToolCard,
+  revealInPreview,
   summarizeArgs,
 } from "./Markdown";
-import type { TranscriptItem } from "../lib/types";
+import { copyText } from "../lib/clipboard";
+import type { AssistantBlock, TranscriptItem } from "../lib/types";
 
 /** The scrolling conversation view for one session. */
 export function Transcript({
@@ -124,7 +126,11 @@ const Row = memo(function Row({
               block.type === "text" ? (
                 <Markdown key={index} text={block.text} />
               ) : block.type === "thinking" ? (
-                <ThinkingBlockView key={index} text={block.thinking} />
+                <ThinkingBlockView
+                  key={index}
+                  text={block.thinking}
+                  streaming={item.streaming}
+                />
               ) : (
                 <div key={index} className="tool-badge">
                   <span className="tool-badge-name">{block.name}</span>
@@ -142,6 +148,7 @@ const Row = memo(function Row({
               item.stopReason !== "toolUse" && (
                 <div className="row-meta">stopReason: {item.stopReason}</div>
               )}
+            <CopyAnswerButton blocks={item.blocks} />
           </div>
         </div>
       );
@@ -173,6 +180,30 @@ const Row = memo(function Row({
           </div>
         </div>
       );
+    case "changedFiles":
+      return (
+        <div className="row info">
+          <div className="changed-files-card">
+            <div className="changed-files-title">
+              本轮修改了 {item.paths.length} 个文件
+            </div>
+            <ul className="changed-files-list">
+              {item.paths.map((path) => (
+                <li key={path}>
+                  <button
+                    type="button"
+                    className="changed-files-path"
+                    title={`在预览中打开 ${path}`}
+                    onClick={() => revealInPreview(path)}
+                  >
+                    {path}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      );
     default:
       return (
         <div
@@ -183,6 +214,47 @@ const Row = memo(function Row({
       );
   }
 });
+
+/** Copy an assistant answer without its thinking blocks or tool calls. */
+function CopyAnswerButton({ blocks }: { blocks: AssistantBlock[] }) {
+  const [state, setState] = useState<"idle" | "done" | "error">("idle");
+  const answer = blocks
+    .filter(
+      (block): block is Extract<AssistantBlock, { type: "text" }> =>
+        block.type === "text",
+    )
+    .map((block) => block.text)
+    .join("\n\n")
+    .trim();
+  if (!answer) return null;
+  const onClick = () => {
+    void copyText(answer)
+      .then(() => {
+        setState("done");
+        window.setTimeout(() => setState("idle"), 1600);
+      })
+      .catch(() => setState("error"));
+  };
+  return (
+    <button
+      type="button"
+      className="copy-answer"
+      data-state={state}
+      onClick={onClick}
+      title={
+        state === "error"
+          ? "复制失败，请手动选择文本"
+          : "复制回答正文（不含思考过程）"
+      }
+    >
+      {state === "error"
+        ? "复制失败"
+        : state === "done"
+          ? "已复制"
+          : "复制回答"}
+    </button>
+  );
+}
 
 function BashCard({
   item,

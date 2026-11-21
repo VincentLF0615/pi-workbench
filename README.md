@@ -51,6 +51,8 @@
 
 2026-11-19 第三轮与验收：接入扩展通知级别、状态栏、窗口标题和 dock widget；增加代码复制、安全 http/https 外链和 `Row` memo。40 项前端测试与 84 项 Rust 测试通过。CDP 验收补齐菜单、重命名、删除取消、扩展、IME 组合输入与 DPR=1.5 的 960×600 渲染；真实模型备用线路 `stepfun-cn/step-3.7-flash` 通过，默认模型的超时现象另行记录。NSIS/MSI 构建完成，MSI 隔离展开后的生产应用已通过离线会话和原生目录选择 smoke，未覆盖正式安装。详细数据见 `docs/verification-2026-11-19.md`。
 
+2026-11-21 细节与 Pi 1.6.0：修复欢迎页首条发送、文件预览 reveal、后台完成通知、标签邻居选择和命令错误反馈；家目录文件树按需读取并隐藏根节点私有/系统项，长工具参数不再撑宽转录。内置 Pi 升为 1.6.0，vendoring 增加 SHA-512 完整性、精确版本和许可证校验。86 项 Rust 测试与 63 项前端测试通过，真实 1.6.0 离线协议和最小真实模型 smoke 通过；NSIS/MSI 及包内 1.6.0 的隔离生产 smoke 通过，未覆盖正式安装。完整实机对比与产物哈希见 `docs/verification-2026-11-21.md`。
+
 ## 目录结构
 
 ```
@@ -76,7 +78,7 @@ pi-workbench/
   tools/install-msvc.ps1      MSVC + Windows SDK 安装脚本
   tools/make-icons.py          应用图标生成
   tools/rpc-smoke.ps1          .NET 管道版协议冒烟（备用诊断）
-  docs/protocol-notes.md      pi 1.5.2 RPC 协议笔记
+  docs/protocol-notes.md      pi 1.6.0 RPC 协议笔记
 ```
 
 ## 快速开始
@@ -125,7 +127,7 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
 
 ## M4 打包与打磨
 
-- **应用图标**：原创「折纸 π」设计（深紫底 + 彩虹渐变屋顶横杠 + 紫/青双腿，源稿见 `docs/icon-reference/`），`tools/make-icons.py` 从源稿裁切母本并重采样出 Tauri 与 Windows Store 需要的全部尺寸，含多尺寸 `.ico` 与 `.icns`
+- **应用图标**：原创「折纸 π」设计（透明背景，彩虹渐变屋顶横杠 + 紫/青双腿，源稿见 `docs/icon-reference/`），`tools/make-icons.py` 从源稿抠底、居中并重采样出 Tauri 与 Windows Store 需要的全部尺寸，含多尺寸 `.ico` 与 `.icns`
 - **单实例**：`tauri-plugin-single-instance`；第二次启动自动退出并把参数转交给已运行的实例，同时 `show` + `unminimize` + `set_focus` 把窗口带到前台
 - **命令行参数**：
   ```text
@@ -135,7 +137,7 @@ pwsh -File tools\dev.ps1 app          # full Tauri desktop app
   ```
   未知参数被忽略，`--help` / `--version` 不触发打开行为
 - **启动恢复**：`%APPDATA%\pi-workbench\settings.json` 记录 `last_project` 与 `open_sessions`；启动时优先命令行意图，否则重开上次的会话。关闭标签会同步移除记录
-- **pi 版本兼容**：解析 `pi --version`，与测试版本 `1.5.x` 比较；主版本不同或次版本更新时在顶部横幅提示
+- **pi 版本兼容**：解析 `pi --version`，与测试版本 `1.6.x` 比较；主版本不同或次版本更新时在顶部横幅提示
 - **内置 pi**：安装包附带一份 [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)（MIT），没有本机 pi 的用户开箱即用。查找顺序：显式路径 → `PI_EXECUTABLE` → 本机托管安装（`~/.pi/agent`，升级优先）→ 安装包内置副本 → PATH。内置副本由 `tools\vendor-pi.ps1` 从 npm registry 拉取（`--ignore-scripts`，与官方安装流程一致），MIT 许可证原文随包分发
 - **打包**：`tools\bundle.ps1` 产出 NSIS（当前用户安装，含简体中文）与 MSI
 
@@ -196,6 +198,6 @@ pwsh -File tools\bundle.ps1
 ## 参考
 
 - [pi RPC 模式](https://pi.dev/docs/latest/rpc)、[RPC 命令](https://pi.dev/docs/latest/rpc-commands)、[JSON 事件流](https://pi.dev/docs/latest/json)、[扩展 UI](https://pi.dev/docs/latest/rpc-extension-ui)
-- 本机同版本文档：`~/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/pi-coding-agent/docs/`
+- 本机同版本文档：`~/.pi/agent/install/releases/1.6.0/node_modules/@earendil-works/pi-coding-agent/docs/`
 - [pi-gpui（Rust + GPUI 的同类实现，macOS/Linux）](https://github.com/bytesbay/pi-gpui)
 - [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)

@@ -53,11 +53,24 @@ pub fn list_dir(
     if !target.is_dir() {
         return Err(format!("not a directory: {}", target.display()));
     }
+    let home_root = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .and_then(|home| std::fs::canonicalize(home).ok())
+        .is_some_and(|home| target.canonicalize().ok() == Some(home));
     let mut budget = MAX_TOTAL_ENTRIES;
-    read_dir(&target, depth, &mut budget)
+    read_dir(&target, depth, &mut budget, home_root)
 }
 
-fn read_dir(dir: &Path, depth: usize, budget: &mut usize) -> Result<Vec<FileNode>, String> {
+fn is_private_home_entry(name: &str) -> bool {
+    name.starts_with('.') || name.to_ascii_lowercase().starts_with("ntuser")
+}
+
+fn read_dir(
+    dir: &Path,
+    depth: usize,
+    budget: &mut usize,
+    home_root: bool,
+) -> Result<Vec<FileNode>, String> {
     let entries = std::fs::read_dir(dir).map_err(|error| error.to_string())?;
     let mut nodes = Vec::new();
 
@@ -67,6 +80,9 @@ fn read_dir(dir: &Path, depth: usize, budget: &mut usize) -> Result<Vec<FileNode
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        if home_root && is_private_home_entry(&name) {
+            continue;
+        }
         let is_dir = path.is_dir();
 
         if is_dir && ALWAYS_SKIP.contains(&name.as_str()) {
@@ -75,7 +91,7 @@ fn read_dir(dir: &Path, depth: usize, budget: &mut usize) -> Result<Vec<FileNode
 
         let children = if is_dir && depth > 1 {
             *budget -= 1;
-            Some(read_dir(&path, depth - 1, budget)?)
+            Some(read_dir(&path, depth - 1, budget, false)?)
         } else {
             None
         };
@@ -224,6 +240,16 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains(".git")));
 
         cleanup(&root);
+    }
+
+    #[test]
+    fn home_root_hides_private_and_system_entries_only_at_that_boundary() {
+        assert!(is_private_home_entry(".npmrc"));
+        assert!(is_private_home_entry(".pi"));
+        assert!(is_private_home_entry("NTUSER.DAT"));
+        assert!(is_private_home_entry("ntuser.ini"));
+        assert!(!is_private_home_entry("Documents"));
+        assert!(!is_private_home_entry("notes.txt"));
     }
 
     #[test]

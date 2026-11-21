@@ -3,8 +3,8 @@ It is not affiliated with, sponsored by, or endorsed by Pi or Earendil.
 
 The application icon is original artwork created for this project:
 the pi glyph as folded ribbons — a rainbow-gradient roof band over a
-violet left leg and a blue-to-mint right leg with a dark cavity
-between them. Its palette is a nod to Pi's public branding, but the
+violet left leg and a blue-to-mint right leg, on a transparent
+background. Its palette is a nod to Pi's public branding, but the
 composition does not reproduce any official mark or logo. The design
 source lives in docs/icon-reference/ and tools/make-icons.py.
 

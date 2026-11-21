@@ -5,6 +5,10 @@ import type { FileNode, GitFile, GitStatus, TextFile } from "../lib/types";
 
 /** Which panel the right dock is showing. */
 export type DockTab = "files" | "changes" | "preview" | "logs";
+export interface PreviewRequest {
+  path: string;
+  requestId: number;
+}
 
 /**
  * The right-hand workbench dock: file tree, git changes, file preview and
@@ -16,6 +20,7 @@ export function Dock({
   tab,
   onTab,
   onReveal,
+  previewRequest,
   widgets,
 }: {
   projectDir: string | null;
@@ -23,6 +28,7 @@ export function Dock({
   tab: DockTab;
   onTab: (tab: DockTab) => void;
   onReveal: (path: string) => void;
+  previewRequest: PreviewRequest | null;
   widgets: Record<string, string[]>;
 }) {
   const [git, setGit] = useState<GitStatus | null>(null);
@@ -39,7 +45,7 @@ export function Dock({
           const status = await api.gitStatus(projectDir!);
           setGit(status);
         } else if (which === "files") {
-          const nodes = await api.listFiles(projectDir!, null, 2);
+          const nodes = await api.listFiles(projectDir!, null, 1);
           setFiles(nodes);
         } else if (which === "logs" && sessionId) {
           const result = await api.sessionLogs(sessionId);
@@ -65,7 +71,11 @@ export function Dock({
   return (
     <aside className="dock">
       <div className="dock-tabs">
-        <DockButton active={tab === "files"} onClick={() => onTab("files")} title="项目文件">
+        <DockButton
+          active={tab === "files"}
+          onClick={() => onTab("files")}
+          title="项目文件"
+        >
           文件
         </DockButton>
         <DockButton
@@ -76,7 +86,11 @@ export function Dock({
         >
           改动
         </DockButton>
-        <DockButton active={tab === "preview"} onClick={() => onTab("preview")} title="文件预览">
+        <DockButton
+          active={tab === "preview"}
+          onClick={() => onTab("preview")}
+          title="文件预览"
+        >
           预览
         </DockButton>
         <DockButton
@@ -92,18 +106,13 @@ export function Dock({
       {error && <div className="dock-error">{error}</div>}
 
       <div className="dock-body">
-        {tab === "files" && <FileTree nodes={files} onOpen={onReveal} onPick={onReveal} />}
-        {tab === "changes" && (
-          <ChangesPanel
-            git={git}
-            projectDir={projectDir}
-            onOpen={(path) => {
-              onReveal(path);
-              onTab("preview");
-            }}
-          />
+        {tab === "files" && (
+          <FileTree nodes={files} onOpen={onReveal} onPick={onReveal} />
         )}
-        {tab === "preview" && <PreviewPane />}
+        {tab === "changes" && (
+          <ChangesPanel git={git} projectDir={projectDir} onOpen={onReveal} />
+        )}
+        {tab === "preview" && <PreviewPane request={previewRequest} />}
         {tab === "logs" && <LogPane lines={logs} />}
       </div>
       <ExtensionWidgets widgets={widgets} />
@@ -116,7 +125,9 @@ export function ExtensionWidgets({
 }: {
   widgets: Record<string, string[]>;
 }) {
-  const entries = Object.entries(widgets).filter(([, lines]) => lines.length > 0);
+  const entries = Object.entries(widgets).filter(
+    ([, lines]) => lines.length > 0,
+  );
   if (entries.length === 0) return null;
   return (
     <section className="extension-widgets" aria-label="扩展组件">
@@ -151,9 +162,16 @@ function DockButton({
 }) {
   return (
     <div className={`dock-tab ${active ? "active" : ""}`}>
-      <button type="button" onClick={onClick} title={title} aria-pressed={active}>
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        aria-pressed={active}
+      >
         {children}
-        {badge != null && badge > 0 && <span className="dock-badge">{badge}</span>}
+        {badge != null && badge > 0 && (
+          <span className="dock-badge">{badge}</span>
+        )}
       </button>
       {onClickReload && (
         <button
@@ -218,7 +236,9 @@ export function FileTree({
           <div key={node.path}>
             <div
               className={`file-row ${node.is_dir ? "dir" : ""}`}
-              onClick={() => (node.is_dir ? void toggle(node) : onPick(node.path))}
+              onClick={() =>
+                node.is_dir ? void toggle(node) : onPick(node.path)
+              }
               onDoubleClick={() => !node.is_dir && onOpen(node.path)}
               title={node.path}
             >
@@ -288,9 +308,13 @@ export function ChangesPanel({
             onDoubleClick={() => onOpen(file.path)}
             title={file.path}
           >
-            <span className={`change-status st-${file.status}`}>{file.status}</span>
+            <span className={`change-status st-${file.status}`}>
+              {file.status}
+            </span>
             <span className="change-path">{file.path}</span>
-            {file.old_path && <span className="change-old">← {file.old_path}</span>}
+            {file.old_path && (
+              <span className="change-old">← {file.old_path}</span>
+            )}
           </div>
         ))}
       </div>
@@ -304,39 +328,37 @@ export function ChangesPanel({
   );
 }
 /** File preview pane. */
-export function PreviewPane() {
-  const [path, setPath] = useState<string | null>(null);
+export function PreviewPane({ request }: { request: PreviewRequest | null }) {
   const [file, setFile] = useState<TextFile | null>(null);
   const [language, setLanguage] = useState<string>("text");
   const [error, setError] = useState<string | null>(null);
+  const path = request?.path ?? null;
 
-  // The dock's "reveal" sets the path; listen for it through a custom event.
   useEffect(() => {
-    const onReveal = (event: Event) => {
-      const detail = (event as CustomEvent<{ path: string }>).detail;
-      if (detail?.path) {
-        setPath(detail.path);
-        void load(detail.path);
-      }
-    };
-    window.addEventListener("pi-workbench:reveal", onReveal);
-    return () => window.removeEventListener("pi-workbench:reveal", onReveal);
-  }, []);
-
-  const load = async (target: string) => {
+    if (!request) {
+      setFile(null);
+      setError(null);
+      return;
+    }
+    let alive = true;
     setError(null);
     setFile(null);
-    try {
-      const [loaded, lang] = await Promise.all([
-        api.readTextFile(target),
-        api.fileLanguage(target),
-      ]);
-      setFile(loaded);
-      setLanguage(lang);
-    } catch (cause) {
-      setError(String(cause));
-    }
-  };
+    void Promise.all([
+      api.readTextFile(request.path),
+      api.fileLanguage(request.path),
+    ])
+      .then(([loaded, lang]) => {
+        if (!alive) return;
+        setFile(loaded);
+        setLanguage(lang);
+      })
+      .catch((cause) => {
+        if (alive) setError(String(cause));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [request]);
 
   if (!path) {
     return <div className="dock-empty">在文件树或工具卡片里选择文件</div>;
@@ -371,7 +393,8 @@ export function LogPane({ lines }: { lines: string[] | null }) {
   }, [lines]);
 
   if (lines === null) return <div className="dock-empty">正在加载…</div>;
-  if (lines.length === 0) return <div className="dock-empty">pi 还没有输出日志</div>;
+  if (lines.length === 0)
+    return <div className="dock-empty">pi 还没有输出日志</div>;
 
   return (
     <div className="logs" ref={ref}>

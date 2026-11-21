@@ -10,12 +10,14 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AssistantBlock,
   Draft,
   PiBatch,
   PiQueues,
   SessionInfo,
   SessionSnapshot,
   Settings,
+  TranscriptItem,
   UiReply,
 } from "./lib/types";
 import contracts from "../../../fixtures/contracts/ui-replies.json";
@@ -28,8 +30,17 @@ vi.mock("./lib/external", async (importOriginal) => {
   return { ...actual, openExternal: externalMocks.open };
 });
 
+const notificationMocks = vi.hoisted(() => ({
+  notifyTurnFinished: vi.fn(),
+}));
+vi.mock("./lib/notify", () => ({
+  notifyTurnFinished: notificationMocks.notifyTurnFinished,
+}));
+
 const mocks = vi.hoisted(() => ({
   events: undefined as undefined | ((batch: PiBatch) => void),
+  toasts: undefined as
+    undefined | ((sessionId: string, message: string) => void),
   opened: undefined as undefined | ((info: SessionInfo) => void),
   snapshot: undefined as undefined | ((snapshot: SessionSnapshot) => void),
   api: {
@@ -40,6 +51,7 @@ const mocks = vi.hoisted(() => ({
     settingsLocation: vi.fn(),
     saveSettings: vi.fn(),
     takeStartupIntent: vi.fn(),
+    defaultProjectDir: vi.fn(),
     openSession: vi.fn(),
     closeSession: vi.fn(),
     listSessions: vi.fn(),
@@ -50,6 +62,8 @@ const mocks = vi.hoisted(() => ({
     getAvailableModels: vi.fn(),
     getForkMessages: vi.fn(),
     listFiles: vi.fn(),
+    readTextFile: vi.fn(),
+    fileLanguage: vi.fn(),
     getSessionSnapshot: vi.fn(),
     sendPrompt: vi.fn(),
     steer: vi.fn(),
@@ -78,13 +92,20 @@ vi.mock("./lib/api", () => ({
     mocks.snapshot = handler;
     return () => {};
   },
-  onToasts: () => () => {},
+  onToasts: (handler: (sessionId: string, message: string) => void) => {
+    mocks.toasts = handler;
+    return () => {
+      mocks.toasts = undefined;
+    };
+  },
   onOpenRequest: () => () => {},
 }));
 import App from "./App";
 import { Composer, ExtensionDialogs } from "./components/Composer";
 import { Transcript } from "./components/Transcript";
-import { Markdown } from "./components/Markdown";
+import { Markdown, ThinkingBlockView } from "./components/Markdown";
+import { projectLabel } from "./components/Sidebar";
+import { applyEvent, deriveSessionTitle } from "./lib/transcript";
 import { useSessions } from "./lib/store";
 import { normalizeStats } from "./lib/stats";
 import { validateImages, MAX_IMAGE_BYTES } from "./lib/images";
@@ -130,15 +151,17 @@ const settings: Settings = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  notificationMocks.notifyTurnFinished.mockResolvedValue(true);
   dialogMocks.open.mockResolvedValue(null);
   externalMocks.open.mockResolvedValue(undefined);
   mocks.api.setWindowTitle.mockResolvedValue(undefined);
-  mocks.api.discoverPi.mockResolvedValue({ found: true, version: "1.5.2" });
+  mocks.api.discoverPi.mockResolvedValue({ found: true, version: "1.6.0" });
   mocks.api.listProjects.mockResolvedValue([]);
   mocks.api.getSettings.mockResolvedValue(settings);
   mocks.api.settingsLocation.mockResolvedValue("test-settings");
   mocks.api.saveSettings.mockResolvedValue(undefined);
   mocks.api.takeStartupIntent.mockResolvedValue(null);
+  mocks.api.defaultProjectDir.mockResolvedValue("C:/home");
   mocks.api.openSession.mockResolvedValue(base);
   mocks.api.listSessions.mockResolvedValue([base.info]);
   mocks.api.closeSession.mockResolvedValue(undefined);
@@ -151,6 +174,13 @@ beforeEach(() => {
   });
   mocks.api.getForkMessages.mockResolvedValue({ messages: [] });
   mocks.api.listFiles.mockResolvedValue([]);
+  mocks.api.readTextFile.mockImplementation(async (path: string) => ({
+    path,
+    text: `contents of ${path}`,
+    truncated: false,
+    total_bytes: 20,
+  }));
+  mocks.api.fileLanguage.mockResolvedValue("rust");
   mocks.api.getSessionSnapshot.mockResolvedValue(base);
   mocks.api.sendPrompt.mockResolvedValue({});
   mocks.api.steer.mockResolvedValue({});
@@ -1063,6 +1093,168 @@ describe("Markdown actions", () => {
   });
 });
 
+describe("assistant answer copy", () => {
+  function renderAssistant(blocks: AssistantBlock[], streaming = false) {
+    return render(
+      <Transcript
+        items={[
+          {
+            kind: "assistant",
+            id: "a1",
+            blocks,
+            streaming,
+          },
+        ]}
+        busy={false}
+      />,
+    );
+  }
+
+  it("copies only text blocks, skipping thinking and tool calls", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderAssistant([
+      { type: "thinking", thinking: "secret reasoning" },
+      { type: "text", text: "first part" },
+      { type: "toolCall", id: "t1", name: "read", arguments: {} },
+      { type: "text", text: "second part" },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "复制回答" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText).toHaveBeenCalledWith("first part\n\nsecond part");
+  });
+
+  it("hides the copy button when the answer has no text blocks", () => {
+    renderAssistant([{ type: "thinking", thinking: "only thoughts" }]);
+    expect(screen.queryByRole("button", { name: "复制回答" })).toBeNull();
+  });
+});
+
+describe("thinking collapse", () => {
+  it("auto-expands while streaming and collapses when the turn ends", () => {
+    const { rerender } = render(
+      <ThinkingBlockView text="partial thought" streaming={true} />,
+    );
+    expect(screen.getByText("partial thought")).toBeTruthy();
+
+    rerender(<ThinkingBlockView text="full thought" streaming={false} />);
+    expect(screen.queryByText("full thought")).toBeNull();
+  });
+
+  it("keeps a manual toggle after streaming ends", () => {
+    const { rerender } = render(
+      <ThinkingBlockView text="thought" streaming={true} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /思考过程/ }));
+    // The user collapsed it mid-stream; it stays collapsed afterwards.
+    expect(screen.queryByText("thought")).toBeNull();
+    rerender(<ThinkingBlockView text="thought" streaming={false} />);
+    expect(screen.queryByText("thought")).toBeNull();
+  });
+});
+
+describe("changed files card", () => {
+  const toolItem = (id: string, name: string, path: string) => ({
+    kind: "tool" as const,
+    id,
+    toolCallId: id,
+    name,
+    args: { path },
+    state: "ok" as const,
+    isError: false,
+  });
+
+  it("aggregates edit/write paths into one card when the turn settles", () => {
+    let items: TranscriptItem[] = [
+      toolItem("t1", "edit", "src/a.rs"),
+      toolItem("t2", "write", "src/b.rs"),
+      toolItem("t3", "edit", "src/a.rs"), // duplicate path
+      toolItem("t4", "read", "src/c.rs"), // not a write tool
+    ];
+    const settled = applyEvent(
+      items,
+      { kind: "pi", event: { type: "agent_settled", aborted: false } },
+      true,
+    );
+    items = settled.items;
+    const card = items.find((item) => item.kind === "changedFiles");
+    expect(card).toMatchObject({
+      kind: "changedFiles",
+      paths: ["src/a.rs", "src/b.rs"],
+    });
+    expect(settled.busy).toBe(false);
+  });
+
+  it("does not repeat paths already summarized by an earlier card", () => {
+    let items: TranscriptItem[] = [
+      toolItem("t1", "edit", "src/a.rs"),
+      { kind: "changedFiles", id: "c1", paths: ["src/a.rs"] },
+      toolItem("t2", "edit", "src/a.rs"),
+    ];
+    const settled = applyEvent(
+      items,
+      { kind: "pi", event: { type: "agent_settled", aborted: false } },
+      true,
+    );
+    const cards = settled.items.filter((item) => item.kind === "changedFiles");
+    expect(cards).toHaveLength(1);
+  });
+
+  it("adds no card when the turn touched no files", () => {
+    const items: TranscriptItem[] = [toolItem("t1", "read", "src/c.rs")];
+    const settled = applyEvent(
+      items,
+      { kind: "pi", event: { type: "agent_settled", aborted: false } },
+      true,
+    );
+    expect(
+      settled.items.find((item) => item.kind === "changedFiles"),
+    ).toBeUndefined();
+  });
+});
+
+describe("project naming", () => {
+  it("shows the last path segment as the project name", () => {
+    expect(projectLabel("E:\\work\\pi-workbench")).toBe("pi-workbench");
+    expect(projectLabel("C:/Users/LuoFeng/Documents/my project")).toBe(
+      "my project",
+    );
+  });
+
+  it("falls back to the whole path for drive roots", () => {
+    expect(projectLabel("E:\\")).toBe("E:\\");
+    expect(projectLabel("E:/")).toBe("E:/");
+  });
+});
+
+describe("session auto-title", () => {
+  it("derives a concise title from the opening message", () => {
+    expect(deriveSessionTitle("帮我修复登录页面的 bug")).toBe(
+      "帮我修复登录页面的 bug",
+    );
+  });
+
+  it("truncates long messages at a word boundary", () => {
+    const title = deriveSessionTitle(
+      "请帮我分析这个项目的整体架构并给出重构建议，重点看模块划分",
+    );
+    expect(title).toBeTruthy();
+    expect(title!.length).toBeLessThanOrEqual(25);
+    expect(title!.endsWith("…")).toBe(true);
+  });
+
+  it("strips markdown, code, and shrinks paths", () => {
+    expect(
+      deriveSessionTitle("修复 `E:\\repo\\src\\main.rs` 的 **编译错误**"),
+    ).toBe("修复 main.rs 的 编译错误");
+    expect(deriveSessionTitle("```rust\nfn main() {}\n```")).toBeNull();
+    expect(deriveSessionTitle("   ")).toBeNull();
+  });
+});
+
 type Submit = (text: string, images: Draft["images"]) => Promise<void>;
 
 function ComposerHarness({
@@ -1211,5 +1403,284 @@ it("separates accumulated tokens from current context", () => {
     tokens: 80,
     contextWindow: 10000,
     percent: 0.8,
+  });
+});
+
+describe("welcome submission", () => {
+  it("opens the home session and sends to its actual id", async () => {
+    render(<App />);
+    const input = await screen.findByLabelText("开始新对话");
+    fireEvent.change(input, { target: { value: "检查当前项目" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始" }));
+    await waitFor(() =>
+      expect(mocks.api.sendPrompt).toHaveBeenCalledWith(
+        "s1",
+        "检查当前项目",
+        [],
+      ),
+    );
+    expect(mocks.api.defaultProjectDir).toHaveBeenCalled();
+    await screen.findByLabelText("消息");
+    expect(mocks.api.listFiles).toHaveBeenCalledWith("C:/project", null, 1);
+
+    fireEvent.click(document.querySelector(".tab .session-close")!);
+    const reopened = (await screen.findByLabelText(
+      "开始新对话",
+    )) as HTMLInputElement;
+    expect(reopened.value).toBe("");
+  });
+
+  it("keeps the welcome prompt when opening fails", async () => {
+    mocks.api.openSession.mockRejectedValueOnce(new Error("denied"));
+    render(<App />);
+    const input = await screen.findByLabelText("开始新对话");
+    fireEvent.change(input, { target: { value: "不要丢失" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始" }));
+    await screen.findByText(/无法打开默认工作目录/);
+    expect((input as HTMLInputElement).value).toBe("不要丢失");
+    expect(mocks.api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("moves a failed first prompt into the new session draft", async () => {
+    mocks.api.sendPrompt.mockRejectedValueOnce(new Error("offline"));
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("开始新对话"), {
+      target: { value: "失败后重试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始" }));
+    await waitFor(() => expect(mocks.api.sendPrompt).toHaveBeenCalled());
+    const composer = (await screen.findByLabelText(
+      "消息",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => expect(composer.value).toBe("失败后重试"));
+    expect(screen.getByLabelText("消息")).toBe(composer);
+  });
+
+  it("does not open an empty palette on welcome and exposes settings", async () => {
+    render(<App />);
+    await screen.findByLabelText("开始新对话");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(document.querySelector(".palette")).toBeNull();
+    expect(mocks.api.getSlashCommands).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(await screen.findByRole("dialog", { name: "设置" })).toBeTruthy();
+  });
+});
+
+describe("preview and command errors", () => {
+  it("opens a reveal after the dock was closed and reloads the same path", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    render(<App />);
+    await screen.findByLabelText("消息");
+    fireEvent.click(screen.getByRole("button", { name: "面板" }));
+    expect(document.querySelector(".dock")).toBeNull();
+
+    const reveal = () =>
+      window.dispatchEvent(
+        new CustomEvent("pi-workbench:reveal", {
+          detail: { path: "C:/project/src/main.rs" },
+        }),
+      );
+    act(reveal);
+    expect(await screen.findByText("main.rs")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "预览" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(mocks.api.readTextFile).toHaveBeenCalledWith(
+      "C:/project/src/main.rs",
+    );
+
+    mocks.api.readTextFile.mockClear();
+    act(reveal);
+    await waitFor(() =>
+      expect(mocks.api.readTextFile).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("shows command loading failures instead of a perpetual spinner", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    mocks.api.getSlashCommands.mockRejectedValueOnce(new Error("offline"));
+    render(<App />);
+    await screen.findByLabelText("消息");
+    fireEvent.click(screen.getByRole("button", { name: "命令" }));
+    await screen.findByText(/无法加载命令：Error: offline/);
+    expect(screen.queryByText("正在加载命令…")).toBeNull();
+  });
+
+  it("keeps the palette open when running a command fails", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    mocks.api.getSlashCommands.mockResolvedValue({
+      commands: [{ name: "demo", source: "extension", description: "Demo" }],
+    });
+    mocks.api.sendPrompt.mockRejectedValueOnce(new Error("rejected"));
+    render(<App />);
+    await screen.findByLabelText("消息");
+    fireEvent.click(screen.getByRole("button", { name: "命令" }));
+    fireEvent.click(await screen.findByRole("button", { name: /\/demo/ }));
+    await screen.findByText(/命令运行失败：Error: rejected/);
+    expect(screen.getByRole("dialog", { name: "Pi 命令面板" })).toBeTruthy();
+    expect(mocks.api.sendPrompt).toHaveBeenCalledWith("s1", "/demo");
+  });
+});
+
+describe("session completion details", () => {
+  it("selects a neighboring tab and only welcomes after the last close", async () => {
+    const snapshots = ["s1", "s2", "s3"].map((id) => ({
+      ...base,
+      info: {
+        ...base.info,
+        id,
+        label: id,
+        sessionPath: `C:/sessions/${id}.jsonl`,
+      },
+    }));
+    mocks.api.openSession
+      .mockResolvedValueOnce(snapshots[0])
+      .mockResolvedValueOnce(snapshots[1])
+      .mockResolvedValueOnce(snapshots[2]);
+    const { result } = renderHook(() => useSessions());
+    await waitFor(() => expect(result.current.settings).not.toBeNull());
+    await act(async () => {
+      await result.current.openProject("C:/project");
+      await result.current.openProject("C:/project");
+      await result.current.openProject("C:/project");
+    });
+    act(() => result.current.setActiveId("s2"));
+    await act(async () => result.current.closeSession("s2"));
+    expect(result.current.activeId).toBe("s3");
+    expect(result.current.sessions.map((runtime) => runtime.info.id)).toEqual([
+      "s1",
+      "s3",
+    ]);
+    await act(async () => result.current.closeSession("s3"));
+    expect(result.current.activeId).toBe("s1");
+    await act(async () => result.current.closeSession("s1"));
+    expect(result.current.activeId).toBeNull();
+  });
+
+  it("notifies the actual background session with the actual outcome", async () => {
+    mocks.api.openSession
+      .mockResolvedValueOnce({
+        ...base,
+        info: { ...base.info, id: "s1", label: "first" },
+      })
+      .mockResolvedValueOnce({
+        ...base,
+        info: { ...base.info, id: "s2", label: "second", generation: 1 },
+      });
+    const { result } = renderHook(() => useSessions());
+    await waitFor(() => expect(result.current.settings).not.toBeNull());
+    await act(async () => {
+      await result.current.openProject("C:/project");
+      await result.current.openProject("C:/project");
+    });
+
+    act(() => {
+      mocks.events?.({
+        sessionId: "s2",
+        generation: 1,
+        events: [{ kind: "pi", event: { type: "agent_start" } }],
+      });
+      result.current.setActiveId("s1");
+    });
+    expect(notificationMocks.notifyTurnFinished).not.toHaveBeenCalled();
+    act(() =>
+      mocks.events?.({
+        sessionId: "s2",
+        generation: 1,
+        events: [
+          { kind: "pi", event: { type: "agent_settled", aborted: false } },
+        ],
+      }),
+    );
+    expect(notificationMocks.notifyTurnFinished).toHaveBeenCalledWith(
+      "second",
+      "completed",
+    );
+
+    act(() =>
+      mocks.events?.({
+        sessionId: "s1",
+        generation: 1,
+        events: [
+          { kind: "pi", event: { type: "agent_start" } },
+          { kind: "pi", event: { type: "agent_settled", aborted: true } },
+        ],
+      }),
+    );
+    expect(notificationMocks.notifyTurnFinished).toHaveBeenCalledWith(
+      "first",
+      "stopped",
+    );
+
+    act(() =>
+      mocks.events?.({
+        sessionId: "s1",
+        generation: 1,
+        events: [
+          { kind: "pi", event: { type: "agent_start" } },
+          {
+            kind: "pi",
+            event: {
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "failed" }],
+                stopReason: "error",
+                errorMessage: "boom",
+              },
+            },
+          },
+          { kind: "pi", event: { type: "agent_settled", aborted: false } },
+        ],
+      }),
+    );
+    expect(notificationMocks.notifyTurnFinished).toHaveBeenCalledWith(
+      "first",
+      "failed",
+    );
+  });
+
+  it("disables model changes for a closed process", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    mocks.api.openSession.mockResolvedValue({
+      ...base,
+      info: { ...base.info, closed: true },
+    });
+    render(<App />);
+    const trigger = await screen.findByTitle("会话已断开");
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "M", ctrlKey: true, shiftKey: true });
+    expect(mocks.api.getAvailableModels).not.toHaveBeenCalled();
+  });
+
+  it("stacks multiple accessible error toasts", async () => {
+    mocks.api.getSettings.mockResolvedValue({
+      ...settings,
+      lastProject: "C:/project",
+    });
+    render(<App />);
+    await screen.findByLabelText("消息");
+    act(() => {
+      mocks.toasts?.("s1", "first error");
+      mocks.toasts?.("s1", "second error");
+    });
+    expect(document.querySelectorAll(".toast-stack .toast")).toHaveLength(2);
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    expect(
+      screen.getAllByRole("button", { name: "关闭original的错误提示" }),
+    ).toHaveLength(2);
   });
 });

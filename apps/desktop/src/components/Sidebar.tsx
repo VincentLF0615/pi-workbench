@@ -6,6 +6,15 @@ import type { ProjectGroupInfo, SessionFileInfo } from "../lib/types";
 import type { SessionRuntime } from "../lib/store";
 import piMark from "../assets/pi-mark.png";
 
+/** A friendly project name: the path's last segment, falling back to the
+ * whole path for drive roots like `E:\`. */
+export function projectLabel(cwd: string): string {
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  const base = trimmed.split(/[\\/]/).pop() ?? trimmed;
+  // `E:\` trims to `E:` whose base is a bare drive; keep the original.
+  return /^[A-Za-z]:$/.test(base) ? cwd : base.length > 0 ? base : cwd;
+}
+
 /** Left sidebar: projects, their sessions, and the sessions open in this app. */
 export function Sidebar({
   projects,
@@ -213,7 +222,8 @@ export function Sidebar({
           return (
             <Section
               key={group.cwd}
-              title={group.cwd}
+              title={projectLabel(group.cwd)}
+              fullTitle={group.cwd}
               count={group.sessions.length}
               collapsible
               open={isOpen}
@@ -239,6 +249,7 @@ export function Sidebar({
 
 function Section({
   title,
+  fullTitle,
   count,
   children,
   collapsible,
@@ -246,12 +257,15 @@ function Section({
   onToggle,
 }: {
   title: string;
+  /** Optional full path shown on hover when `title` is a shortened name. */
+  fullTitle?: string;
   count: number;
   children: React.ReactNode;
   collapsible?: boolean;
   open?: boolean;
   onToggle?: () => void;
 }) {
+  const hoverTitle = fullTitle ?? title;
   return (
     <div className="sidebar-section">
       <div className="sidebar-section-head">
@@ -263,14 +277,14 @@ function Section({
             aria-expanded={open}
           >
             <span className="caret">{open ? "▾" : "▸"}</span>
-            <span className="truncate" title={title}>
+            <span className="truncate" title={hoverTitle}>
               {title}
             </span>
             <span className="count">{count}</span>
           </button>
         ) : (
           <div className="sidebar-section-title">
-            <span className="truncate" title={title}>
+            <span className="truncate" title={hoverTitle}>
               {title}
             </span>
             <span className="count">{count}</span>

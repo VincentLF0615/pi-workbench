@@ -45,6 +45,37 @@ const isStreamingAssistant = (item: TranscriptItem) =>
 const isToolWithId = (toolCallId: string) => (item: TranscriptItem) =>
   item.kind === "tool" && item.toolCallId === toolCallId;
 
+/** Tools that modify files; their `path` argument is the file touched. */
+const FILE_WRITE_TOOLS = new Set(["edit", "write", "str_replace"]);
+
+/** Derive a concise session title from the turn's first user message.
+ * Strips markdown, code spans, long paths, and whitespace, then trims
+ * to a readable length. Returns null when nothing usable remains. */
+export function deriveSessionTitle(text: string): string | null {
+  let title = text
+    // Code spans and fenced blocks contribute nothing to a title.
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    // Markdown emphasis and links keep only their text.
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_#>]+/g, " ")
+    // Windows and POSIX paths shrink to their last segment.
+    .replace(/[A-Za-z]:\\[^\s]+|\/[^\s]+/g, (match) => {
+      const base = match.split(/[\\/]/).filter(Boolean).pop() ?? match;
+      return base.length > 0 ? base : match;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) return null;
+  const MAX = 24;
+  if (title.length > MAX) {
+    const cut = title.slice(0, MAX);
+    const boundary = cut.lastIndexOf(" ");
+    title = `${(boundary > 8 ? cut.slice(0, boundary) : cut).trim()}…`;
+  }
+  return title.length > 0 ? title : null;
+}
+
 /** Fold a `get_messages` history into transcript items. */
 export function fromHistory(messages: PiMessage[]): TranscriptItem[] {
   const items: TranscriptItem[] = [];
@@ -183,8 +214,31 @@ export function applyEvent(
     case "agent_start":
       return { items: next, busy: true };
 
-    case "agent_settled":
+    case "agent_settled": {
+      // Aggregate the files this turn's edit/write tools touched into a
+      // single card at the end of the turn (PI-Desktop #1891/#170).
+      const paths: string[] = [];
+      for (const item of next) {
+        if (item.kind !== "tool" || !FILE_WRITE_TOOLS.has(item.name)) continue;
+        const path =
+          typeof item.args.path === "string" && item.args.path.length > 0
+            ? item.args.path
+            : null;
+        if (path && !paths.includes(path)) paths.push(path);
+      }
+      // Only files touched since the last settled turn belong to this card;
+      // drop paths already summarized by an earlier card.
+      const seen = new Set<string>();
+      for (const item of next) {
+        if (item.kind === "changedFiles")
+          item.paths.forEach((p) => seen.add(p));
+      }
+      const fresh = paths.filter((p) => !seen.has(p));
+      if (fresh.length > 0) {
+        next.push({ kind: "changedFiles", id: nextId(), paths: fresh });
+      }
       return { items: next, busy: false };
+    }
 
     case "message_start": {
       const message = event.message;

@@ -31,3 +31,7 @@ apps/desktop/src-tauri/vendor-pi/
 # Generated Tauri schemas and verification data
 apps/desktop/src-tauri/gen/
 .verification/
+
+# Local product notes (not distributed)
+docs/competitor-analysis-local.md
+docs/status-2026-11-21-local.md

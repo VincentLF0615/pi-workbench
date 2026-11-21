@@ -2,11 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { openExternal, safeExternalUrl } from "../lib/external";
 
-import type { AssistantBlock, messageText, textOfContent, toolResultText, TranscriptItem } from "../lib/types";
+import type {
+  AssistantBlock,
+  messageText,
+  textOfContent,
+  toolResultText,
+  TranscriptItem,
+} from "../lib/types";
 
 /** Minimal, dependency-free markdown renderer for assistant answers. */
 export function Markdown({ text }: { text: string }) {
-  const blocks = useMemo(() => splitBlocks(text), [text]);  return (
+  const blocks = useMemo(() => splitBlocks(text), [text]);
+  return (
     <div className="md">
       {blocks.map((block, index) => (
         <Block key={index} block={block} />
@@ -37,7 +44,8 @@ function splitBlocks(text: string): Block[] {
     paragraph = [];
   };
   const flushList = () => {
-    if (listItems.length) blocks.push({ kind: "list", ordered: listOrdered, items: listItems });
+    if (listItems.length)
+      blocks.push({ kind: "list", ordered: listOrdered, items: listItems });
     listItems = [];
   };
   const flushQuote = () => {
@@ -75,7 +83,11 @@ function splitBlocks(text: string): Block[] {
     if (/^#{1,6}\s/.test(line.trim())) {
       flushAll();
       const level = line.trim().match(/^#+/)![0].length;
-      blocks.push({ kind: "heading", level, text: line.trim().slice(level).trim() });
+      blocks.push({
+        kind: "heading",
+        level,
+        text: line.trim().slice(level).trim(),
+      });
       continue;
     }
 
@@ -117,7 +129,7 @@ function Block({ block }: { block: Block }) {
     case "code":
       return <CodeBlock block={block} />;
     case "heading": {
-      const Tag = (`h${Math.min(block.level, 6)}`) as "h1";
+      const Tag = `h${Math.min(block.level, 6)}` as "h1";
       return <Tag className="md-heading">{inline(block.text)}</Tag>;
     }
     case "list":
@@ -135,7 +147,9 @@ function Block({ block }: { block: Block }) {
         </ul>
       );
     case "quote":
-      return <blockquote className="md-quote">{block.lines.map(inline)}</blockquote>;
+      return (
+        <blockquote className="md-quote">{block.lines.map(inline)}</blockquote>
+      );
     case "rule":
       return <hr className="md-rule" />;
     default:
@@ -157,7 +171,11 @@ function inline(text: string) {
     const bold = part.split(/(\*\*[^*]+\*\*)/g);
     return bold.map((chunk, chunkIndex) => {
       if (chunk.startsWith("**") && chunk.endsWith("**") && chunk.length > 4) {
-        return <strong key={`${index}-${chunkIndex}`}>{renderLinks(chunk.slice(2, -2))}</strong>;
+        return (
+          <strong key={`${index}-${chunkIndex}`}>
+            {renderLinks(chunk.slice(2, -2))}
+          </strong>
+        );
       }
       return <span key={`${index}-${chunkIndex}`}>{renderLinks(chunk)}</span>;
     });
@@ -202,7 +220,11 @@ function ExternalLink({
       >
         {children}
       </a>
-      {error && <span className="md-link-error" role="alert">打开失败</span>}
+      {error && (
+        <span className="md-link-error" role="alert">
+          打开失败
+        </span>
+      )}
     </span>
   );
 }
@@ -245,16 +267,36 @@ function CodeBlock({ block }: { block: Extract<Block, { kind: "code" }> }) {
 /** Render one assistant message block. */
 export function AssistantBlockView({ block }: { block: AssistantBlock }) {
   if (block.type === "text") return <Markdown text={block.text} />;
-  if (block.type === "thinking") return <ThinkingBlockView text={block.thinking} />;
+  if (block.type === "thinking")
+    return <ThinkingBlockView text={block.thinking} />;
   return <ToolCallBadge name={block.name} arguments={block.arguments} />;
 }
 
-export function ThinkingBlockView({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+export function ThinkingBlockView({
+  text,
+  streaming = false,
+}: {
+  text: string;
+  streaming?: boolean;
+}) {
+  // Auto-expand while streaming, auto-collapse when the turn ends —
+  // unless the user toggled this block manually (PI-Desktop #1857/#2174).
+  const [userToggled, setUserToggled] = useState(false);
+  const [userOpen, setUserOpen] = useState(false);
+  const open = userToggled ? userOpen : streaming;
   return (
     <div className="thinking">
-      <button type="button" className="thinking-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button
+        type="button"
+        className="thinking-toggle"
+        onClick={() => {
+          setUserToggled(true);
+          setUserOpen(!open);
+        }}
+        aria-expanded={open}
+      >
         {open ? "▾" : "▸"} 思考过程（{text.length} 字）
+        {streaming && <span className="thinking-live">· 生成中</span>}
       </button>
       {open && <pre className="thinking-body">{text}</pre>}
     </div>
@@ -291,7 +333,12 @@ export function ToolCard({
 
   return (
     <div className={`tool-card tool-${item.state}`}>
-      <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button
+        type="button"
+        className="tool-head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
         <span className={`tool-dot tool-dot-${item.state}`} />
         <span className="tool-name">{item.name}</span>
         {filePath ? (
@@ -311,7 +358,11 @@ export function ToolCard({
           <span className="tool-summary">{summarizeArgs(item.args)}</span>
         )}
         <span className="tool-meta">
-          {item.state === "running" ? "运行中…" : item.state === "error" ? "失败" : "完成"}
+          {item.state === "running"
+            ? "运行中…"
+            : item.state === "error"
+              ? "失败"
+              : "完成"}
           {duration ? ` · ${duration}` : ""}
         </span>
         <span className="tool-caret">{open ? "▾" : "▸"}</span>
@@ -325,7 +376,9 @@ export function ToolCard({
           {(item.resultText || item.partial) && (
             <div className="tool-section">
               <div className="tool-label">输出</div>
-              <pre className={item.isError ? "tool-output error" : "tool-output"}>
+              <pre
+                className={item.isError ? "tool-output error" : "tool-output"}
+              >
                 {item.resultText || item.partial}
               </pre>
             </div>
@@ -349,7 +402,10 @@ export function summarizeArgs(args: Record<string, unknown>): string {
   if (typeof url === "string") return url;
   const keys = Object.keys(args);
   if (keys.length === 0) return "";
-  return truncate(keys.map((key) => `${key}=${JSON.stringify(args[key])}`).join(" "), 80);
+  return truncate(
+    keys.map((key) => `${key}=${JSON.stringify(args[key])}`).join(" "),
+    80,
+  );
 }
 
 /** A file path from a tool call's arguments, if it names one. */
@@ -360,7 +416,9 @@ export function filePathOf(args: Record<string, unknown>): string | null {
 
 /** Ask the preview pane to open a file. */
 export function revealInPreview(path: string) {
-  window.dispatchEvent(new CustomEvent("pi-workbench:reveal", { detail: { path } }));
+  window.dispatchEvent(
+    new CustomEvent("pi-workbench:reveal", { detail: { path } }),
+  );
 }
 
 function truncate(text: string, max: number) {

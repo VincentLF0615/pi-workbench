@@ -30,6 +30,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // One app process. A second launch hands its arguments to the running
         // instance instead of starting a duplicate.
         .plugin(tauri_plugin_single_instance::init({
@@ -55,6 +56,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::discover_pi,
             commands::list_projects,
+            commands::default_project_dir,
             commands::list_sessions_for,
             commands::list_sessions,
             commands::open_session,

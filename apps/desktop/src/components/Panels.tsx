@@ -136,17 +136,21 @@ export function CommandPalette({
   open,
   commands,
   busy,
+  error = null,
   onRun,
   onClose,
 }: {
   open: boolean;
   commands: SlashCommand[] | null;
   busy: boolean;
-  onRun: (name: string) => void;
+  error?: string | null;
+  onRun: (name: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const { requestClose, onKeyDown } = useDialogFocus({
@@ -154,7 +158,16 @@ export function CommandPalette({
     onClose,
     dialogRef,
     initialFocusRef: inputRef,
+    pending,
   });
+
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setIndex(0);
+      setRunError(null);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -180,11 +193,19 @@ export function CommandPalette({
 
   if (!open) return null;
 
-  const submit = () => {
-    const command = filtered[index];
-    if (!command) return;
-    onRun(command.name);
-    onClose();
+  const submit = async (name?: string) => {
+    const commandName = name ?? filtered[index]?.name;
+    if (!commandName || pending) return;
+    setPending(true);
+    setRunError(null);
+    try {
+      await onRun(commandName);
+      onClose();
+    } catch (cause) {
+      setRunError(`命令运行失败：${String(cause)}`);
+    } finally {
+      setPending(false);
+    }
   };
 
   return (
@@ -218,12 +239,17 @@ export function CommandPalette({
               setIndex((current) => Math.max(current - 1, 0));
             } else if (event.key === "Enter") {
               event.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
+        {(runError || error) && (
+          <div className="palette-error" role="alert">
+            {runError ?? error}
+          </div>
+        )}
         <div className="palette-list">
-          {filtered.length === 0 && (
+          {filtered.length === 0 && !error && !runError && (
             <div className="palette-empty">
               {commands === null ? "正在加载命令…" : "没有匹配的命令"}
             </div>
@@ -233,11 +259,9 @@ export function CommandPalette({
               key={`${command.source}:${command.name}`}
               type="button"
               className={`palette-item ${at === index ? "active" : ""}`}
+              disabled={pending}
               onMouseEnter={() => setIndex(at)}
-              onClick={() => {
-                onRun(command.name);
-                onClose();
-              }}
+              onClick={() => void submit(command.name)}
             >
               <span className="palette-name">/{command.name}</span>
               {command.description && (
@@ -251,7 +275,13 @@ export function CommandPalette({
         </div>
         <div className="palette-footer">
           <span>↑↓ 选择 · Enter 运行 · Esc 关闭</span>
-          <span>{busy ? "pi 正在运行" : `${filtered.length} 个命令`}</span>
+          <span>
+            {pending
+              ? "正在运行命令…"
+              : busy
+                ? "pi 正在运行"
+                : `${filtered.length} 个命令`}
+          </span>
         </div>
       </div>
     </div>

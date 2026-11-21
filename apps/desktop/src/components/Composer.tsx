@@ -18,6 +18,7 @@ export function Composer({
   queues,
   pendingMessageCount = 0,
   stopping = false,
+  footer = null,
   onDraftChange,
   onSend,
   onSteer,
@@ -32,6 +33,8 @@ export function Composer({
   queues: PiQueues | null;
   pendingMessageCount?: number;
   stopping?: boolean;
+  /** Extra controls rendered at the composer's bottom-right (model picker). */
+  footer?: React.ReactNode;
   onDraftChange: (draft: Draft) => void;
   onSend: (text: string, images: ImageContent[]) => Promise<void>;
   onSteer: (text: string, images: ImageContent[]) => Promise<void>;
@@ -229,6 +232,7 @@ export function Composer({
           </div>
         </div>
       </div>
+      {footer && <div className="composer-footer">{footer}</div>}
     </div>
   );
 }

@@ -372,6 +372,12 @@ export type TranscriptItem =
       tokensBefore?: number;
       reason: string;
     }
+  | {
+      /** Files touched by edit/write tools in one finished turn. */
+      kind: "changedFiles";
+      id: string;
+      paths: string[];
+    }
   | { kind: "info"; id: string; text: string; tone: "info" | "warn" | "error" };
 
 /** Text content of any message, or of a tool result payload. */

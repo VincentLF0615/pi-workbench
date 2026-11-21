@@ -102,6 +102,16 @@ pub async fn list_projects() -> Result<Vec<sessions::ProjectGroup>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The directory used when the user starts chatting before picking a
+/// project: their home directory ("此计算机" in the empty state).
+#[tauri::command]
+pub fn default_project_dir() -> Result<String, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or_else(|| "no home directory".to_string())?;
+    Ok(home.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub async fn list_sessions_for(project_dir: String) -> Result<Vec<sessions::SessionFile>, String> {
     tauri::async_runtime::spawn_blocking(move || sessions::sessions_for(&project_dir, None))

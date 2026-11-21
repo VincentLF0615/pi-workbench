@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const args = process.argv.slice(2);
-if(args.includes('--version')) { console.log('1.5.2 (offline test fixture)');process.exit(0); }
+if(args.includes('--version')) { console.log('1.6.0 (offline test fixture)');process.exit(0); }
 let sessionFile = args.includes('--session') ? args[args.indexOf('--session') + 1] : path.join(process.cwd(), `mock-${process.pid}.jsonl`);
 let sequence = 0, compact = null, cancelSwitch = false, cancelBranch = false, failBranch = false, ignoreEof = false;
 let streamTimer=null, streamText='';

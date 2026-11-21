@@ -7,10 +7,10 @@
 顶部模型按钮的小箭头已移除。
 
 `get_available_models` 在 Pi 返回的模型元数据上补充 `supportedThinkingLevels`。
-规则与本机 Pi 1.5.2 的 `getSupportedThinkingLevels` 一致：
+规则与本机 Pi 1.6.0 的 `getSupportedThinkingLevels` 一致：
 
 - 非思考模型仅支持 `off`，界面显示不支持思考的说明。
-- `thinkingLevelMap` 中的 `null` 表示明确不支持。
+- `thinkingLevelMap` 中的 `null` 表示明确不支持；GPT-6.2 的 `off` 与 `minimal` 因而不会显示。
 - 未声明的普通档位按 Pi 的默认规则处理；`xhigh`、`max` 需显式声明。
 - 点击另一个模型后立即按该模型重新计算选项，不再沿用当前运行模型的档位。
 
